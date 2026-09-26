@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import { createApprovalCodec } from '../src/approval.js';
 import { TokenStore } from '../src/downloads.js';
 import { createHttpServer, loadConfig } from '../src/index.js';
 import { createLogger, type Logger } from '../src/log.js';
@@ -15,6 +16,7 @@ export const PROTOCOL_VERSION = '2026-07-28';
 
 const META = {
   'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+  // 2026-07-28 要求该字段存在；空对象明确表示客户端不声明 elicitation 等可选能力
   'io.modelcontextprotocol/clientCapabilities': {},
 };
 
@@ -24,15 +26,31 @@ export interface ToolCallOutcome {
   data: unknown;
   text: string;
   content?: { type: string; [key: string]: unknown }[];
+  /** MCP wire-level resultType；新审批协议不会使用 input_required */
+  resultType?: string;
   /** JSON-RPC 层错误（未知方法 / 传输层失败等） */
   error?: { code: number; message: string };
 }
 
 export type Send = (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
+/** 用户在审核卡片中的选择。 */
+export type ApprovalDecision = 'approve' | 'cancel';
+
+export interface ApprovalOptions {
+  /** 默认 approve（自动走完确认流程） */
+  decision?: ApprovalDecision;
+}
+
 export interface McpClient {
   send: Send;
   callTool(name: string, args: Record<string, unknown>): Promise<ToolCallOutcome>;
+  /** 危险调用的完整两轮流程：首轮拿审核卡片/token，然后按 decision 用普通参数重试 */
+  callToolApproving(
+    name: string,
+    args: Record<string, unknown>,
+    opts?: ApprovalOptions,
+  ): Promise<ToolCallOutcome>;
   listTools(): Promise<{ name: string; description: string; inputSchema: Record<string, unknown> }[]>;
 }
 
@@ -49,6 +67,11 @@ export interface Harness {
   handler: ReturnType<typeof createMcpHandler>;
   client: McpClient;
   callTool(name: string, args: Record<string, unknown>): Promise<ToolCallOutcome>;
+  callToolApproving(
+    name: string,
+    args: Record<string, unknown>,
+    opts?: ApprovalOptions,
+  ): Promise<ToolCallOutcome>;
   listTools(): Promise<{ name: string; description: string; inputSchema: Record<string, unknown> }[]>;
   /** 真实 HTTP 服务（路由 /mcp 与 /files），返回指向它的客户端 */
   startHttpServer(): Promise<{ origin: string; client: McpClient; close: () => Promise<void> }>;
@@ -74,6 +97,27 @@ export function mcpHeaders(body: Record<string, unknown>): Record<string, string
   };
 }
 
+/** 危险调用的第二轮请求体：token 原样回传，并携带用户在审核卡片中的选择。 */
+export function approvalRetryBody(
+  name: string,
+  args: Record<string, unknown>,
+  approvalToken: string,
+  opts: ApprovalOptions = {},
+): Record<string, unknown> {
+  const approvalDecision = opts.decision ?? 'approve';
+
+  return {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: {
+      name,
+      arguments: { ...args, approvalToken, approvalDecision },
+      _meta: META,
+    },
+  };
+}
+
 export function toOutcome(body: Record<string, unknown>): ToolCallOutcome {
   if (body['error']) {
     const error = body['error'] as { code: number; message: string };
@@ -81,7 +125,11 @@ export function toOutcome(body: Record<string, unknown>): ToolCallOutcome {
   }
 
   const result = body['result'] as
-    | { content?: { type: string; text?: string }[]; isError?: boolean }
+    | {
+        content?: { type: string; text?: string }[];
+        isError?: boolean;
+        resultType?: string;
+      }
     | undefined;
   const content = result?.content ?? [];
   const textBlock = content.find((block) => block.type === 'text' && typeof block.text === 'string');
@@ -94,7 +142,13 @@ export function toOutcome(body: Record<string, unknown>): ToolCallOutcome {
     data = text;
   }
 
-  return { isError: Boolean(result?.isError), data, text, content };
+  return {
+    isError: Boolean(result?.isError),
+    data,
+    text,
+    content,
+    ...(result?.resultType ? { resultType: result.resultType } : {}),
+  };
 }
 
 export function createClient(send: Send): McpClient {
@@ -102,6 +156,13 @@ export function createClient(send: Send): McpClient {
     send,
     async callTool(name, args) {
       return toOutcome(await send(toolCallBody(name, args)));
+    },
+    async callToolApproving(name, args, opts = {}) {
+      const first = toOutcome(await send(toolCallBody(name, args)));
+      const data = first.data as { resultType?: string; approvalToken?: string } | undefined;
+      if (data?.resultType !== 'approval_required' || typeof data.approvalToken !== 'string') return first;
+
+      return toOutcome(await send(approvalRetryBody(name, args, data.approvalToken, opts)));
     },
     async listTools() {
       const body = await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: META } });
@@ -147,6 +208,7 @@ export async function createHarness(
     skills,
     downloads,
     logger,
+    approvals: createApprovalCodec(),
     config: loadConfig({ MINI_PI_MCP_HOME: home }),
   };
 
@@ -171,12 +233,15 @@ export async function createHarness(
     handler,
     client,
     callTool: (name, args) => client.callTool(name, args),
+    callToolApproving: (name, args, opts) => client.callToolApproving(name, args, opts),
     listTools: () => client.listTools(),
     async startHttpServer() {
       const server = createHttpServer(deps);
       await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
       const { port } = server.address() as AddressInfo;
       const origin = `http://127.0.0.1:${port}`;
+      // 让 config 反映真实监听端口：export 在无法从请求推断对外地址时会回退到它
+      deps.config.port = port;
 
       return {
         origin,
@@ -208,6 +273,28 @@ export function expectOk(outcome: ToolCallOutcome): Record<string, unknown> {
 export function expectError(outcome: ToolCallOutcome): string {
   if (!outcome.isError) throw new Error(`expected error but got: ${outcome.text}`);
   return outcome.text;
+}
+
+export function expectApproval(outcome: ToolCallOutcome): {
+  resultType: 'approval_required';
+  approvalRequired: true;
+  approvalToken: string;
+  approval: {
+    title: string;
+    risk: string;
+    riskLabel: string;
+    summary: string;
+    message: string;
+    presentation: string;
+    options: { id: string; label: string; style: string }[];
+  };
+} {
+  if (outcome.isError) throw new Error(`expected approval card but got error: ${outcome.text}`);
+  const data = outcome.data as Record<string, unknown>;
+  if (data['resultType'] !== 'approval_required' || typeof data['approvalToken'] !== 'string') {
+    throw new Error(`expected approval_required but got: ${outcome.text}`);
+  }
+  return data as ReturnType<typeof expectApproval>;
 }
 
 export const skillFile = (body: string, fm = 'name: alpha\ndescription: 全局 alpha'): string =>

@@ -47,7 +47,10 @@ export function createSkillsTool(deps: {
     schema: skillsSchema,
     annotations: { readOnlyHint: true, openWorldHint: false },
     requiresSession: true,
-    describeCall: (args) => ({ target: args.name ? `${args.action} ${args.name}` : args.action }),
+    describeCall: (args) => ({
+      target: args.name ? `${args.action} ${args.name}` : args.action,
+      fields: { action: args.action, ...(args.name ? { name: args.name } : {}) },
+    }),
     handler: async (args, _ctx, session) => {
       if (!session) throw new ToolError('skills 需要有效 sessionId');
 

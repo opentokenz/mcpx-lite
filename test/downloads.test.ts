@@ -135,9 +135,11 @@ describe('GET /files/:token', () => {
   it('未知 / 篡改 / 过期 token 都是 404', async () => {
     const server = await startFilesServer(tokens);
     const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'notes.txt') });
+    // 篡改要保证一定改了字符，否则随机 token 末位恰好是 b 时会误判
+    const tampered = `${record.token.slice(0, -1)}${record.token.endsWith('b') ? 'c' : 'b'}`;
 
     expect((await fetch(`${server.origin}/files/file_${'a'.repeat(32)}`)).status).toBe(404);
-    expect((await fetch(`${server.origin}/files/${record.token.slice(0, -1)}b`)).status).toBe(404);
+    expect((await fetch(`${server.origin}/files/${tampered}`)).status).toBe(404);
     expect((await fetch(`${server.origin}/files/short`)).status).toBe(404);
 
     clock += 5 * 60 * 1000 + 1;

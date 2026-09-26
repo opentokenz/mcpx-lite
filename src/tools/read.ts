@@ -19,7 +19,7 @@ export const readSchema = withGoalReason({
 export const READ_DESCRIPTION = `读取文本文件内容（按行分页）。
 
 用途：在改代码前了解现状——确认实现、配置、日志、测试文件的内容。
-二进制文件（PDF / 图片 / ZIP 等）不能用本工具读取，请用 download。
+二进制文件（PDF / 图片 / ZIP 等）不能用本工具读取，请用 export。
 
 参数：
 - sessionId：必填
@@ -28,7 +28,8 @@ export const READ_DESCRIPTION = `读取文本文件内容（按行分页）。
 - limit：最多返回行数，默认 200（配合 offset 翻页；返回里带 hasMore / totalLines）
 - goal / reason：必填，写入 session history
 
-行为：最多返回 100_000 字符，超出时截断并置 truncated=true。
+行为：只读工具，不受 base 边界限制：base 外也能直接读，不需要用户确认。
+最多返回 100_000 字符，超出时截断并置 truncated=true。
 
 示例：
 { "sessionId": "ses_ab12cd34ef56", "path": "src/index.ts", "limit": 100, "goal": "了解入口实现", "reason": "需要确认索引文件结构" }
@@ -118,7 +119,7 @@ async function assertTextFile(path: string, size: number): Promise<void> {
   try {
     const buffer = Buffer.alloc(Math.min(SNIFF_BYTES, size));
     await handle.read(buffer, 0, buffer.length, 0);
-    if (buffer.includes(0)) throw new ToolError(`binary file (use download instead): ${path}`);
+    if (buffer.includes(0)) throw new ToolError(`binary file (use export instead): ${path}`);
   } finally {
     await handle.close();
   }

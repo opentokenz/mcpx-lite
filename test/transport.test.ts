@@ -270,7 +270,24 @@ describe('history 与终端日志', () => {
     expect(JSON.stringify(session['history'])).not.toContain('content');
   });
 
-  it('终端日志包含 session-create 事件与工具 call/done 行（含 sessionId / 目标 / 结果摘要 / 耗时）', async () => {
+  it('观测卡片不打印文件正文 / 命令输出 / 超长提示词', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+    const secret = 'TOPSECRET-CARD-CONTENT';
+    await writeFile(join(h.workspace, 'card-secret.txt'), secret, 'utf8');
+
+    const read = expectOk(
+      await h.callTool('read', { sessionId, path: 'card-secret.txt', goal: '读配置', reason: '确认内容' }),
+    );
+
+    // 返回值里有正文，日志卡片里没有（去掉卡片装饰与换行后再比对，避免换行掩盖问题）
+    const flat = h.logs.join('\n').replace(/[│\s]+/g, '');
+    expect(read['content']).toBe(secret);
+    expect(flat).toContain(`<${secret.length}chars>`);
+    expect(flat).not.toContain(secret);
+  });
+
+  it('终端日志以卡片展示工具调用（含 sessionId / 目标 / 原因 / 结果 / 耗时）', async () => {
     const created = await createSession();
     const sessionId = created['sessionId'] as string;
 
@@ -278,14 +295,17 @@ describe('history 与终端日志', () => {
 
     expect(h.logs.some((line) => line.includes('event session-create') && line.includes(sessionId))).toBe(true);
 
-    const callLine = h.logs.find((line) => line.includes('call') && line.includes('skills'));
-    expect(callLine).toContain(`session="${sessionId}"`);
-    expect(callLine).toContain('goal="了解 skill"');
-    expect(callLine).toContain('reason="先看看"');
+    // 调用起点（debug 级）：单行，含工具名 + 编号 + 目标
+    expect(h.logs.some((line) => line.includes('→ SKILLS #') && line.includes('list'))).toBe(true);
 
-    const doneLine = h.logs.find((line) => line.includes('done') && line.includes('skills'));
-    expect(doneLine).toMatch(/ok ms=\d+/);
-    expect(doneLine).toContain('result=');
-    expect(doneLine).toContain('"skills"');
+    // sessionId / goal / reason 是卡片里默认可见的一等信息
+    expect(h.logs.some((line) => line.includes(`session  ${sessionId}`))).toBe(true);
+    expect(h.logs.some((line) => line.includes('goal     了解 skill'))).toBe(true);
+    expect(h.logs.some((line) => line.includes('reason   先看看'))).toBe(true);
+
+    const doneLine = h.logs.find((line) => line.includes('SKILLS') && line.includes('SUCCESS'));
+    expect(doneLine).toMatch(/\d+ms|\d+\.\d+s/);
+    expect(h.logs.some((line) => line.includes('result   '))).toBe(true);
+    expect(h.logs.some((line) => line.includes('"skills"'))).toBe(true);
   });
 });

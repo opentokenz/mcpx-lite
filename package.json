@@ -2,7 +2,7 @@
   "name": "mini-pi-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, read, write, edit, bash, download",
+  "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, read, write, edit, shell, export",
   "type": "module",
   "engines": {
     "node": ">=22"

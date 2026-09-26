@@ -1,4 +1,5 @@
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import type { ApprovalCodec } from './approval.js';
 import type { TokenStore } from './downloads.js';
 import type { Logger } from './log.js';
 import { registerTools, type ToolDef } from './registry.js';
@@ -6,11 +7,11 @@ import { GATEWAY_INSTRUCTIONS, type SessionStore } from './session.js';
 import type { SkillIndex } from './skills.js';
 import { createSessionTool } from './tools/session.js';
 import { createSkillsTool } from './tools/skills.js';
-import { bashTool } from './tools/bash.js';
-import { createDownloadTool } from './tools/download.js';
-import { editTool } from './tools/edit.js';
+import { createShellTool } from './tools/shell.js';
+import { createExportTool } from './tools/export.js';
+import { createEditTool } from './tools/edit.js';
 import { readTool } from './tools/read.js';
-import { writeTool } from './tools/write.js';
+import { createWriteTool } from './tools/write.js';
 
 const SERVER_INFO = { name: 'mini-pi-mcp', version: '0.1.0' };
 
@@ -19,6 +20,8 @@ export interface Deps {
   skills: SkillIndex;
   downloads: TokenStore;
   logger: Logger;
+  /** 进程级一次性 approval token 存储；所有按请求创建的 server 实例共享 */
+  approvals: ApprovalCodec;
   config: { host: string; port: number };
 }
 
@@ -28,15 +31,22 @@ export function createTools(deps: Deps): ToolDef[] {
     createSessionTool(deps),
     createSkillsTool(deps),
     readTool,
-    writeTool,
-    editTool,
-    bashTool,
-    createDownloadTool({ tokens: deps.downloads, logger: deps.logger, config: deps.config }),
+    createWriteTool(deps.approvals),
+    createEditTool(deps.approvals),
+    createShellTool(deps.approvals),
+    createExportTool({
+      tokens: deps.downloads,
+      logger: deps.logger,
+      config: deps.config,
+      approvals: deps.approvals,
+    }),
   ];
 }
 
 export function buildServer(deps: Deps): McpServer {
-  const server = new McpServer(SERVER_INFO, { instructions: GATEWAY_INSTRUCTIONS });
+  const server = new McpServer(SERVER_INFO, {
+    instructions: GATEWAY_INSTRUCTIONS,
+  });
   registerTools(server, { tools: createTools(deps), sessions: deps.sessions, logger: deps.logger });
   return server;
 }

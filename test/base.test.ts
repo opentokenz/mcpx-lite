@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolvePath } from '../src/session.js';
+import { isInsideBase, resolvePath } from '../src/session.js';
 
 describe('resolvePath（Session Base 解析）', () => {
   it('相对路径基于 base 解析', () => {
@@ -27,5 +27,28 @@ describe('resolvePath（Session Base 解析）', () => {
   it('空 path 报错', () => {
     expect(() => resolvePath('/workspace/project-a', '')).toThrow(/path/);
     expect(() => resolvePath('/workspace/project-a', '   ')).toThrow(/path/);
+  });
+});
+
+describe('isInsideBase（edit 的 base 边界判定）', () => {
+  it('base 内（含子目录、相对路径解析后的结果）为 true', () => {
+    expect(isInsideBase('/a/b', '/a/b/file.ts')).toBe(true);
+    expect(isInsideBase('/a/b', '/a/b/c/d/file.ts')).toBe(true);
+    expect(isInsideBase('/a/b', resolvePath('/a/b', 'src/x.ts'))).toBe(true);
+  });
+
+  it('不能用字符串前缀判断：同前缀的兄弟目录在 base 外', () => {
+    expect(isInsideBase('/a/b', '/a/bc/file.ts')).toBe(false);
+    expect(isInsideBase('/a/b', '/a/b.txt')).toBe(false);
+  });
+
+  it('base 本身与上层目录都在 base 外', () => {
+    expect(isInsideBase('/a/b', '/a/b')).toBe(false);
+    expect(isInsideBase('/a/b', '/a')).toBe(false);
+  });
+
+  it('../ 穿越与其它绝对路径在 base 外', () => {
+    expect(isInsideBase('/a/b', resolvePath('/a/b', '../c.ts'))).toBe(false);
+    expect(isInsideBase('/a/b', '/etc/hosts')).toBe(false);
   });
 });

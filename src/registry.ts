@@ -1,5 +1,12 @@
-import type { CallToolResult, McpServer, ServerContext, ToolAnnotations } from '@modelcontextprotocol/server';
+import {
+  isCallToolResult,
+  type CallToolResult,
+  type McpServer,
+  type ServerContext,
+  type ToolAnnotations,
+} from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import { isApprovalRequiredResult, type ToolObserver } from './approval.js';
 import { ToolError } from './errors.js';
 import type { Logger } from './log.js';
 import { resolvePath } from './session.js';
@@ -10,6 +17,8 @@ export interface ToolCallInfo {
   target: string;
   /** 本次调用涉及的文件（日志用） */
   files?: string[];
+  /** 卡片上展示的工具专属字段（command / path / action 等），保持插入顺序 */
+  fields?: Record<string, unknown>;
 }
 
 export interface ToolDef {
@@ -21,7 +30,12 @@ export interface ToolDef {
   /** 是否要求有效 sessionId（除 session 工具外的 6 个工具都是 true） */
   requiresSession?: boolean;
   describeCall?: (args: any, session: SessionFile | undefined) => ToolCallInfo;
-  handler: (args: any, ctx: ServerContext, session: SessionFile | undefined) => Promise<unknown>;
+  handler: (
+    args: any,
+    ctx: ServerContext,
+    session: SessionFile | undefined,
+    observe: ToolObserver,
+  ) => Promise<unknown>;
 }
 
 /**
@@ -35,20 +49,26 @@ export function defineTool<S extends z.ZodObject<any>>(def: {
   annotations?: ToolAnnotations;
   requiresSession?: boolean;
   describeCall?: (args: z.output<S>, session: SessionFile | undefined) => ToolCallInfo;
-  handler: (args: z.output<S>, ctx: ServerContext, session: SessionFile | undefined) => Promise<unknown>;
+  handler: (
+    args: z.output<S>,
+    ctx: ServerContext,
+    session: SessionFile | undefined,
+    observe: ToolObserver,
+  ) => Promise<unknown>;
 }): ToolDef {
   return def as unknown as ToolDef;
 }
 
 let callSequence = 0;
 
-/** 路径类工具（read / write / edit / download）共用的 history 与日志目标。 */
+/** 路径类工具（read / write / edit / export）共用的 history 与日志目标。 */
 export function describePath(session: SessionFile | undefined, path: string): ToolCallInfo {
+  const fields = { path };
   try {
     const absolute = session ? resolvePath(session.base, path) : path;
-    return absolute ? { target: absolute, files: [absolute] } : { target: '' };
+    return absolute ? { target: absolute, files: [absolute], fields } : { target: '', fields };
   } catch {
-    return { target: String(path ?? '') };
+    return { target: String(path ?? ''), fields };
   }
 }
 
@@ -90,7 +110,7 @@ export function registerTools(
 }
 
 /**
- * 一次工具调用的统一包装：观测日志 + history 审计 + 错误收敛。
+ * 一次工具调用的统一包装：观测卡片 + 安全确认事件 + history 审计 + 错误收敛。
  * 工具本身不写日志，也不处理「预期失败 → isError」的转换。
  */
 async function executeTool(opts: {
@@ -104,20 +124,48 @@ async function executeTool(opts: {
   const id = (callSequence += 1);
   const startedAt = Date.now();
 
-  logger.tool({ id, tool: tool.name, phase: 'call', fields: callFields(args) });
-
   let info: ToolCallInfo = { target: '' };
+  const fields = (): Record<string, unknown> => ({
+    ...auditFields(args),
+    ...(info.fields ?? {}),
+  });
+
+  const observer: ToolObserver = {
+    approval(event) {
+      // required 是用户做决定的那一刻：给完整卡片；approved / declined 只留一行审计
+      logger.tool({
+        id,
+        tool: tool.name,
+        phase: event.phase,
+        riskLevel: event.risk,
+        riskLabel: event.riskLabel,
+        ...(event.note ? { note: event.note } : {}),
+        ...(event.phase === 'required'
+          ? { fields: { ...fields(), ...(event.fields ?? {}), risk: event.riskLabel } }
+          : {}),
+      });
+    },
+  };
+
   try {
     const session = tool.requiresSession ? await sessions.load(String(args['sessionId'] ?? '')) : undefined;
     info = tool.describeCall?.(args, session) ?? { target: '' };
 
-    const result = await tool.handler(args, ctx, session);
+    logger.tool({ id, tool: tool.name, phase: 'call', target: info.target });
+
+    const result = await tool.handler(args, ctx, session, observer);
+
+    if (isApprovalRequiredResult(result)) {
+      // 等待用户在审核卡片中做决定：还没有任何副作用，不写 history
+      return toCallToolResult(result);
+    }
+
     logger.tool({
       id,
       tool: tool.name,
       phase: 'done',
       ms: Date.now() - startedAt,
-      fields: { ...fileFields(info), result: resultSummary(result) },
+      fields: { ...fields(), ...resultFields(result) },
     });
     await recordHistory({ sessions, logger, tool, args, info, ok: true });
 
@@ -130,7 +178,7 @@ async function executeTool(opts: {
       phase: 'fail',
       ms: Date.now() - startedAt,
       error: message,
-      fields: fileFields(info),
+      fields: fields(),
     });
     if (!(error instanceof ToolError)) {
       logger.event('tool-error', {
@@ -179,39 +227,58 @@ async function recordHistory(opts: {
 
 export function toCallToolResult(result: unknown): CallToolResult {
   if (isCallToolResult(result)) return result;
+  if (isApprovalRequiredResult(result)) {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      structuredContent: result,
+    };
+  }
   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
 }
 
-function isCallToolResult(value: unknown): value is CallToolResult {
-  return typeof value === 'object' && value !== null && Array.isArray((value as { content?: unknown }).content);
-}
-
-/** 日志里的调用入参：不打印文件正文，只记长度。 */
-function callFields(args: Record<string, unknown>): Record<string, unknown> {
+/** 卡片最前面的三个审计字段：会话、目标、原因。 */
+function auditFields(args: Record<string, unknown>): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (key === 'content') {
-      fields['contentBytes'] = typeof value === 'string' ? value.length : undefined;
-      continue;
-    }
-    // 日志里统一叫 session，避免 sessionId / session 两种叫法混用
-    fields[key === 'sessionId' ? 'session' : key] = value;
-  }
+
+  const session = args['sessionId'];
+  if (typeof session === 'string' && session) fields['session'] = session;
+  const goal = args['goal'];
+  if (typeof goal === 'string' && goal) fields['goal'] = goal;
+  const reason = args['reason'];
+  if (typeof reason === 'string' && reason) fields['reason'] = reason;
+
   return fields;
 }
 
-function fileFields(info: ToolCallInfo): Record<string, unknown> {
-  return info.files?.length ? { files: info.files } : {};
+/** 结果字段：内容与长字符串只记长度，避免把文件正文 / 命令输出 / 提示词刷进终端。 */
+function resultFields(result: unknown): Record<string, unknown> {
+  return { result: summarize(result) };
 }
 
-/** 日志里的结果摘要：内容以 content block 返回时只记块数与类型，避免刷爆终端。 */
-function resultSummary(result: unknown): unknown {
+const RESULT_STRING_LIMIT = 120;
+/** 这些字段会承载文件正文 / 命令输出，卡片上一律只记长度。 */
+const RESULT_REDACTED_KEYS = new Set(['content', 'stdout', 'stderr', 'blob']);
+
+function summarize(result: unknown): unknown {
   if (isCallToolResult(result)) {
+    // 只记块数与类型：块内容（含 export 内联的 base64 blob / 文件正文）永不进日志
     return {
       blocks: result.content.length,
       types: result.content.map((block) => (block as { type?: string }).type ?? 'unknown'),
     };
   }
+
+  if (typeof result === 'object' && result !== null) {
+    return Object.fromEntries(
+      Object.entries(result as Record<string, unknown>).map(([key, value]) => {
+        if (typeof value === 'string' && (RESULT_REDACTED_KEYS.has(key) || value.length > RESULT_STRING_LIMIT)) {
+          return [key, `<${value.length} chars>`];
+        }
+        return [key, value];
+      }),
+    );
+  }
+
   return result;
 }
 

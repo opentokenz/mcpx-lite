@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import * as z from 'zod/v4';
 import { ToolError } from './errors.js';
 import { writeFileAtomic } from './paths.js';
@@ -17,10 +17,11 @@ const DEFAULT_HISTORY_LIMIT = 200;
 export const GATEWAY_INSTRUCTIONS = [
   '你是通过 mini-pi-mcp 连接到一台真实机器的模型，不是沙箱、不是容器、不是临时环境。',
   '',
-  '- 真实副作用：write / edit 直接修改真实文件；bash 执行的命令、删除、文件操作与 git 操作都会真实生效并持续，没有快照、没有回滚、没有隔离副本。',
-  '- base 只是默认路径锚点（相对路径解析基准 + bash 默认 cwd），不是权限边界：你可以访问 base 之外的任意路径，实际可达范围取决于运行 mini-pi-mcp 的进程权限。',
-  '- 所以先确认影响范围：删除或大段覆盖代码、rm -rf、git reset / commit / push、发布与配置变更、修改 base 之外的敏感文件，都必须先用自然语言向用户说明要做什么与风险，得到用户明确确认后再调用工具。',
-  '- 不要假设有网络隔离、备份或自动测试兜底；不确定就先用只读手段（read / bash 查询）核实，并以真实机器上的实际输出与路径为准。',
+  '- 真实副作用：write / edit 直接修改真实文件，export 会把文件内容交给调用方；shell 执行的命令、删除、文件操作与 git 操作都会真实生效并持续，没有快照、没有回滚、没有隔离副本。',
+  '- base 是写类/外带工具（write / edit / export）的信任边界：base 内可直接执行；base 外（../ 穿越、绝对路径、symlink 逃逸）服务端会返回普通 approval_required 审核卡片和一次性 approvalToken。read 只读且无副作用，不受 base 限制；shell 可以 cd 到任意目录，它的风险由命令白名单判定。',
+  '- 服务端已强制门禁，不能绕过：shell 只有明确安全的命令才直接执行；危险命令、无法静态判断的命令以及越界文件操作会先返回“确认执行 / 取消”审核卡片。调用方必须让用户选择；只有原参数不变并携带 approvalToken + approvalDecision=approve 的重试才执行。',
+  '- 所以先约束自己：删除或大段覆盖代码、rm -rf、git reset / commit / push、发布与配置变更、读取或修改 base 之外的敏感文件，都要先向用户说明要做什么与风险；命中门禁后使用工具返回的审核卡片让用户做选择，不要代替用户确认，也不要反复重试被取消或拒绝的调用。',
+  '- 不要假设有网络隔离、备份或自动测试兜底；不确定就先用只读手段（read / shell 查询）核实，并以真实机器上的实际输出与路径为准。',
 ].join('\n');
 
 const skillMetaSchema = z.object({
@@ -77,6 +78,15 @@ export async function resolveBase(base: string): Promise<string> {
   if (!info.isDirectory()) throw new ToolError(`base is not a directory: ${absolute}`);
 
   return realpath(absolute);
+}
+
+/**
+ * 目标真实路径是否位于 base 内：两侧都必须是 realpath，用 relative 判断而不是字符串前缀。
+ * base 本身不算“内部”（edit 只处理普通文件，不会命中目录）。
+ */
+export function isInsideBase(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 async function pathExists(path: string): Promise<boolean> {

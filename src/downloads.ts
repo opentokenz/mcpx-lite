@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, type Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename } from 'node:path';
@@ -23,9 +23,29 @@ export interface DownloadRecord {
   expiresAt: string;
 }
 
+/** 按扩展名推断 MIME（下载 transport 与 export 内联传输共用）。 */
+export function mimeTypeFor(path: string): string {
+  return lookup(path) || 'application/octet-stream';
+}
+
+/**
+ * 校验导出目标：必须存在且是普通文件；返回 stat 结果。
+ * 无副作用，export 工具在向用户确认之前先用它做前置检查（确认前不得签发 token）。
+ */
+export async function inspectExportable(path: string): Promise<Stats> {
+  let info;
+  try {
+    info = await stat(path);
+  } catch {
+    throw new ToolError(`file does not exist: ${path}`);
+  }
+  if (!info.isFile()) throw new ToolError(`not a regular file: ${path}`);
+  return info;
+}
+
 /**
  * download 工具的下载凭据：随机不透明 token → 恰好一个具体文件，带 TTL。
- * 因为没有路径边界可校验（base 不是边界），token 本身就是唯一授权凭据。
+ * 签发前的 base 边界确认由 export 工具负责（见 enforceBaseBoundary），token 本身只对这一个文件有效。
  */
 export class TokenStore {
   private readonly records = new Map<string, DownloadRecord>();
@@ -42,13 +62,7 @@ export class TokenStore {
   }
 
   async mint(opts: { sessionId: string; path: string }): Promise<DownloadRecord> {
-    let info;
-    try {
-      info = await stat(opts.path);
-    } catch {
-      throw new ToolError(`file does not exist: ${opts.path}`);
-    }
-    if (!info.isFile()) throw new ToolError(`not a regular file: ${opts.path}`);
+    const info = await inspectExportable(opts.path);
 
     this.sweep();
 
@@ -57,7 +71,7 @@ export class TokenStore {
       sessionId: opts.sessionId,
       path: opts.path,
       name: basename(opts.path),
-      mimeType: lookup(opts.path) || 'application/octet-stream',
+      mimeType: mimeTypeFor(opts.path),
       size: info.size,
       expiresAt: new Date(this.now() + this.ttlMs).toISOString(),
     };

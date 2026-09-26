@@ -1,10 +1,14 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHarness, expectError, expectOk, type Harness } from './harness.js';
 
 let h: Harness;
 let sessionId: string;
+
+/** base 外的测试目标：带上工作区名，避免多个测试共享同一个系统 tmp 目录时互相干扰。 */
+const outsideDir = () => `${basename(h.workspace)}-shared`;
+const outsideFile = (name: string) => join(h.workspace, '..', outsideDir(), name);
 
 async function start(): Promise<void> {
   h = await createHarness();
@@ -58,22 +62,24 @@ describe('read 工具', () => {
     expect(result).toMatchObject({ returnedLines: 0, totalLines: 0, hasMore: false, truncated: false, content: '' });
   });
 
-  it('相对路径基于 session.base 解析，绝对路径直接使用，base 之外也能读', async () => {
+  it('相对路径基于 session.base 解析；base 外也能直接读，不需要确认', async () => {
     await mkdir(join(h.workspace, 'src'), { recursive: true });
     await writeFile(join(h.workspace, 'src', 'index.ts'), 'export const a = 1;\n', 'utf8');
-    await mkdir(join(h.workspace, '..', 'shared'), { recursive: true });
-    await writeFile(join(h.workspace, '..', 'shared', 'config.json'), '{}\n', 'utf8');
+    await mkdir(join(h.workspace, '..', outsideDir()), { recursive: true });
+    await writeFile(outsideFile('config.json'), '{}\n', 'utf8');
 
     const relative = expectOk(await read({ path: 'src/index.ts' }));
     expect(relative['path']).toBe(join(h.workspace, 'src', 'index.ts'));
+    expect(relative['content']).toBe('export const a = 1;');
 
-    const outside = expectOk(await read({ path: '../shared/config.json' }));
-    expect(outside['path']).toBe(join(h.workspace, '..', 'shared', 'config.json'));
-    expect(outside['content']).toBe('{}');
+    // base 外：相对路径（..）与绝对路径都直接读
+    const traversal = await read({ path: `../${outsideDir()}/config.json` });
+    expect(traversal.resultType).not.toBe('input_required');
+    expect(expectOk(traversal)['content']).toBe('{}');
 
-    const absolute = expectOk(await read({ path: '/etc/hosts' }));
-    expect(absolute['path']).toBe('/etc/hosts');
-    expect(absolute['content']).toContain('localhost');
+    const absolute = await read({ path: outsideFile('config.json') });
+    expect(absolute.resultType).not.toBe('input_required');
+    expect(expectOk(absolute)['path']).toBe(outsideFile('config.json'));
   });
 
   it('超过字符预算时截断并标记 truncated', async () => {
@@ -97,13 +103,13 @@ describe('read 工具', () => {
     expect((result['content'] as string).length <= 100_000).toBe(true);
   });
 
-  it('二进制文件被拒绝并提示改用 download', async () => {
+  it('二进制文件被拒绝并提示改用 export', async () => {
     await writeFile(join(h.workspace, 'blob.bin'), Buffer.from([0x50, 0x4b, 0x00, 0x01, 0x02]));
 
     const message = expectError(await read({ path: 'blob.bin' }));
 
     expect(message).toMatch(/binary/);
-    expect(message).toMatch(/download/);
+    expect(message).toMatch(/export/);
   });
 
   it('文件不存在、目录、空 path 都是可读错误', async () => {
@@ -127,5 +133,20 @@ describe('read 工具', () => {
       ok: true,
     });
     expect(JSON.stringify(history)).not.toContain('# hi');
+  });
+
+  it('base 外读取不进入确认流程，也不产生安全事件', async () => {
+    await mkdir(join(h.workspace, '..', outsideDir()), { recursive: true });
+    const outside = outsideFile('secret.txt');
+    await writeFile(outside, 'TOPSECRET-READ-BODY\n', 'utf8');
+
+    const outcome = await read({ path: outside });
+
+    expect(outcome.resultType).not.toBe('input_required');
+    expect(expectOk(outcome)['content']).toBe('TOPSECRET-READ-BODY');
+
+    const logs = h.logs.join('\n');
+    expect(logs).not.toContain('APPROVAL');
+    expect(logs).not.toContain('read.outside-base');
   });
 });

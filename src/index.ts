@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from '@modelcontextprotocol/node';
+import { createApprovalCodec } from './approval.js';
 import { DEFAULT_TTL_MS, TokenStore, createFilesRoute } from './downloads.js';
 import { createLogger, resolveLogLevel, type Logger, type LogLevel } from './log.js';
 import { buildHandler, type Deps } from './server.js';
@@ -47,7 +48,7 @@ function header(value: string | string[] | undefined): string {
 /**
  * 一个端口同时提供两个入口：
  * - POST /mcp         → MCP 2026-07-28（Streamable HTTP）
- * - GET  /files/:token → download 工具签发的一次性文件链接
+ * - GET  /files/:token → export 工具签发的一次性文件链接
  * 其余路径 404。回环绑定启用 Host / Origin 校验，防止 DNS rebinding。
  */
 export function createHttpServer(deps: Deps): Server {
@@ -64,17 +65,21 @@ export function createHttpServer(deps: Deps): Server {
 
     const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
     if (pathname === '/mcp') {
-      // 入站观测：谁在用、调哪个方法/工具、什么状态、耗时多久
+      // 入站观测：谁在用、调哪个方法/工具、什么状态、耗时多久（debug 级诊断，不淹没工具卡片）
       const startedAt = Date.now();
       res.once('finish', () => {
-        deps.logger.event('mcp-request', {
-          method: req.method ?? '',
-          rpc: header(req.headers['mcp-method']),
-          name: header(req.headers['mcp-name']),
-          protocol: header(req.headers['mcp-protocol-version']),
-          status: res.statusCode,
-          ms: Date.now() - startedAt,
-        });
+        deps.logger.event(
+          'mcp-request',
+          {
+            method: req.method ?? '',
+            rpc: header(req.headers['mcp-method']),
+            name: header(req.headers['mcp-name']),
+            protocol: header(req.headers['mcp-protocol-version']),
+            status: res.statusCode,
+            ms: Date.now() - startedAt,
+          },
+          'debug',
+        );
       });
       void nodeHandler(req, res);
       return;
@@ -105,6 +110,7 @@ function createDeps(config: Config, logger?: Logger): { deps: Deps; logger: Logg
       skills: new SkillIndex({ globalSkillsDir: config.globalSkillsDir }),
       downloads: new TokenStore({ ttlMs: config.downloadTtlMs }),
       logger: resolvedLogger,
+      approvals: createApprovalCodec(),
       config: { host: config.host, port: config.port },
     },
   };

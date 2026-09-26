@@ -31,7 +31,7 @@ Session 是「模型 ↔ 真实机器」之间的工作句柄，只记住三件�
 - sessionId：resume / get / close 必填
 - goal / reason：必填，写入 session history
 
-路径规则：base 只是相对路径解析基准与 bash 默认 cwd，不是权限边界；其他工具可以访问 base 之外的路径。
+路径规则：base 只是相对路径解析基准与 shell 默认 cwd，不是权限边界；其他工具可以访问 base 之外的路径。
 
 示例：
 { "action": "create", "base": "/workspace/project-a", "goal": "接手 project-a", "reason": "用户要求在该项目上持续工作" }
@@ -58,6 +58,7 @@ export function createSessionTool(deps: {
           : args.action === 'list'
             ? 'list'
             : `${args.action} ${args.sessionId ?? ''}`,
+      fields: { action: args.action },
     }),
     handler: async (args) => {
       switch (args.action) {
