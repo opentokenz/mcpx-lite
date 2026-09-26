@@ -30,7 +30,7 @@ export interface ToolCallOutcome {
   text: string;
   content?: { type: string; [key: string]: unknown }[];
   structuredContent?: unknown;
-  /** MCP wire-level resultType；新审批协议不会使用 input_required */
+  /** MCP wire-level resultType；包含透传自下游的 input_required */
   resultType?: string;
   /** JSON-RPC 层错误（未知方法 / 传输层失败等） */
   error?: { code: number; message: string };
@@ -314,7 +314,7 @@ async function createOwnedDir(owned: string[], prefix: string): Promise<string> 
   const dir = await mkdtemp(join(tmpdir(), prefix));
   owned.push(dir);
   await mkdir(dir, { recursive: true });
-  // macOS 上 /var 是 /private/var 的符号链接：统一成 realpath，测试里可以直接比较 base
+  // macOS 上 /var 是 /private/var 的符号链接：统一成 realpath，测试里可以直接比较 workspace
   return realpath(dir);
 }
 

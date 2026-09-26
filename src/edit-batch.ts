@@ -23,12 +23,12 @@ export interface PreparedBatchEdit {
   replacements: number;
 }
 
-export async function prepareBatchEdits(base: string, edits: BatchFileEdit[]): Promise<PreparedBatchEdit[]> {
+export async function prepareBatchEdits(workspace: string, edits: BatchFileEdit[]): Promise<PreparedBatchEdit[]> {
   const prepared: PreparedBatchEdit[] = [];
   const seenTargets = new Set<string>();
 
   for (const [editIndex, edit] of edits.entries()) {
-    const absolute = resolvePath(base, edit.path);
+    const absolute = resolvePath(workspace, edit.path);
     let info;
     try {
       info = await stat(absolute);

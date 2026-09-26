@@ -11,13 +11,13 @@ import {
 describe('MCP config loader', () => {
   let root: string;
   let globalPath: string;
-  let base: string;
+  let workspace: string;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'mini-pi-mcp-config-'));
     globalPath = join(root, 'home', '.agents', 'mcp.json');
-    base = join(root, 'project');
-    await mkdir(base, { recursive: true });
+    workspace = join(root, 'project');
+    await mkdir(workspace, { recursive: true });
   });
 
   afterEach(async () => {
@@ -30,10 +30,10 @@ describe('MCP config loader', () => {
   }
 
   it('配置文件都不存在时返回空 effective server map', async () => {
-    const config = await loadMcpConfig({ base, globalPath });
+    const config = await loadMcpConfig({ workspace, globalPath });
 
     expect(config.servers).toEqual({});
-    expect(config.projectPath).toBe(join(base, '.mcp.json'));
+    expect(config.projectPath).toBe(join(workspace, '.mcp.json'));
   });
 
   it('project 同名 server 整项覆盖 global，保留各自 source', async () => {
@@ -43,13 +43,13 @@ describe('MCP config loader', () => {
         docs: { url: 'https://docs.example.test/mcp' },
       },
     });
-    await writeJson(join(base, '.mcp.json'), {
+    await writeJson(join(workspace, '.mcp.json'), {
       mcpServers: {
         github: { command: 'project-github', args: ['--project'] },
       },
     });
 
-    const config = await loadMcpConfig({ base, globalPath });
+    const config = await loadMcpConfig({ workspace, globalPath });
 
     expect(config.servers.github).toMatchObject({
       name: 'github',
@@ -72,7 +72,7 @@ describe('MCP config loader', () => {
       },
     });
 
-    await expect(loadMcpConfig({ base, globalPath })).rejects.toThrow(/broken.*command.*url/i);
+    await expect(loadMcpConfig({ workspace, globalPath })).rejects.toThrow(/broken.*command.*url/i);
   });
 
   it('只展开 ${NAME} 环境变量，并在缺失变量时给出变量名', async () => {
@@ -85,7 +85,7 @@ describe('MCP config loader', () => {
       },
     });
 
-    const config = await loadMcpConfig({ base, globalPath });
+    const config = await loadMcpConfig({ workspace, globalPath });
     const remote = config.servers.remote as EffectiveMcpServer;
 
     expect(resolveMcpServerConfig(remote, { MCP_TOKEN: 'secret-value' })).toMatchObject({
@@ -108,7 +108,7 @@ describe('MCP config loader', () => {
       },
     });
 
-    const config = await loadMcpConfig({ base, globalPath });
+    const config = await loadMcpConfig({ workspace, globalPath });
     const local = resolveMcpServerConfig(config.servers.local as EffectiveMcpServer, {
       MCP_TOKEN: 'secret-value',
     });
@@ -132,7 +132,7 @@ describe('MCP config loader', () => {
       },
     });
 
-    const config = await loadMcpConfig({ base, globalPath });
+    const config = await loadMcpConfig({ workspace, globalPath });
     const remote = config.servers.remote as EffectiveMcpServer;
     const a = resolveMcpServerConfig(remote, { MCP_TOKEN: 'secret-a' });
     const b = resolveMcpServerConfig(remote, { MCP_TOKEN: 'secret-b' });

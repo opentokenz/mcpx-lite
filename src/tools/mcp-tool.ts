@@ -42,7 +42,7 @@ export const MCP_TOOL_DESCRIPTION = [
   '',
   '配置来源：',
   '- 全局：~/.agents/mcp.json',
-  '- 项目：<session.base>/.mcp.json',
+  '- 项目：<session.workspace>/.mcp.json',
   '- project 同名 server 整项覆盖 global',
   '',
   '用途：',
@@ -56,6 +56,9 @@ export const MCP_TOOL_DESCRIPTION = [
   '',
   '首版支持 stdio（command/args/env）与 Streamable HTTP（url/headers）。',
   'env/header secret 不会出现在 list/status/history/log 中。',
+  'call：首次调用某个 server 时返回 approval_required；批准后同 session + server + resolved config 免审批。',
+  'read_resource / get_prompt：连接建立后直接执行。',
+  'project 配置首次连接仍按门禁审批；若首次操作就是 call，同一张审批卡同时绑定首次 tool + arguments。',
   'goal / reason：可选审计字段；提供时写入 session history。',
   '',
   '示例：',
@@ -92,7 +95,7 @@ export function createMcpTool(deps: {
     handler: async (args, ctx, session, observe) => {
       if (!session) throw new ToolError('mcp_tool 需要有效 sessionId');
 
-      const config = await loadMcpConfig({ base: session.base, globalPath });
+      const config = await loadMcpConfig({ workspace: session.workspace, globalPath });
 
       switch (args.action) {
         case 'list':
@@ -171,7 +174,10 @@ export function createMcpTool(deps: {
 
         case 'call': {
           const server = requireServer(config.servers, args.server);
+          if (!args.name) throw new ToolError('mcp_tool call 需要 name');
           const resolved = resolveMcpServerConfig(server);
+          const projectConnectionUntrusted =
+            server.source === 'project' && !trust.isTrusted(session.id, resolved.hash);
           const connectApproval = await ensureProjectConnectionApproved({
             server,
             resolved,
@@ -181,10 +187,21 @@ export function createMcpTool(deps: {
             approvalToken: args.approvalToken,
             approvalDecision: args.approvalDecision,
             observe,
+            ...(projectConnectionUntrusted
+              ? {
+                  firstCall: {
+                    name: args.name,
+                    ...(args.arguments ? { arguments: args.arguments } : {}),
+                  },
+                }
+              : {}),
           });
           if (connectApproval) return connectApproval;
+          // 项目连接审批已经包含首次 call 的工具与参数，避免连续弹两张审批卡。
+          if (projectConnectionUntrusted) {
+            trust.trustCalls(session.id, server.name, resolved.hash);
+          }
 
-          if (!args.name) throw new ToolError('mcp_tool call 需要 name');
           const connection = await manager.get(session.id, resolved);
           const tools = arrayField(await connection.client.listTools(), 'tools');
           const tool = tools.find(
@@ -195,13 +212,13 @@ export function createMcpTool(deps: {
           ) as Record<string, unknown> | undefined;
           if (!tool) throw new ToolError('unknown downstream MCP tool: ' + args.name);
 
-          if (!isDirectReadOnlyTool(tool)) {
+          if (!trust.isCallsTrusted(session.id, server.name, resolved.hash)) {
             const toolApproval = await enforceApproval({
               codec: approvals,
               sessionId: session.id,
               tool: 'mcp_tool',
               argsHash: hashArgs([
-                'tool',
+                'call',
                 resolved.hash,
                 args.name,
                 args.arguments ?? {},
@@ -216,11 +233,11 @@ export function createMcpTool(deps: {
                   ] === true)
                     ? 'dangerous'
                     : 'unknown',
-                riskLabel: 'mcp.tool · 下游 MCP 工具可能产生真实副作用',
+                riskLabel: 'mcp.tool · 首次调用该 server 的工具',
                 summary: server.name + ':' + args.name,
                 message: [
-                  '即将调用下游 MCP 工具。',
-                  '下游 annotations 仅作为提示，不是安全保证；确认后调用会在真实下游环境执行。',
+                  '首次调用这个 MCP server 的工具。',
+                  '确认后，当前 session 对该 server 的后续 mcp_tool 调用将不再逐次审批。',
                   '',
                   'server：' + server.name,
                   'tool：' + args.name,
@@ -237,6 +254,7 @@ export function createMcpTool(deps: {
               },
             });
             if (toolApproval) return toolApproval;
+            trust.trustCalls(session.id, server.name, resolved.hash);
           }
 
           const requestState = ctx.mcpReq.requestState<string>();
@@ -320,13 +338,6 @@ export function createMcpTool(deps: {
 
 
 
-function isDirectReadOnlyTool(tool: Record<string, unknown>): boolean {
-  const annotations = tool['annotations'];
-  if (!annotations || typeof annotations !== 'object') return false;
-  const hints = annotations as Record<string, unknown>;
-  return hints['readOnlyHint'] === true && hints['destructiveHint'] !== true;
-}
-
 function requireServer(
   servers: Record<string, EffectiveMcpServer>,
   name: string | undefined,
@@ -346,6 +357,10 @@ async function ensureProjectConnectionApproved(opts: {
   approvalToken?: string;
   approvalDecision?: 'approve' | 'cancel';
   observe?: Parameters<typeof enforceApproval>[0]['observer'];
+  firstCall?: {
+    name: string;
+    arguments?: Record<string, unknown>;
+  };
 }) {
   const {
     server,
@@ -356,37 +371,66 @@ async function ensureProjectConnectionApproved(opts: {
     approvalToken,
     approvalDecision,
     observe,
+    firstCall,
   } = opts;
 
   if (server.source !== 'project' || trust.isTrusted(sessionId, resolved.hash)) return null;
 
-  const approval = await enforceApproval({
-    codec: approvals,
-    sessionId,
-    tool: 'mcp_tool',
-    argsHash: hashArgs(['connect', server.name, resolved.hash]),
-    ...(approvalToken ? { approvalToken } : {}),
-    ...(approvalDecision ? { approvalDecision } : {}),
-    ...(observe ? { observer: observe } : {}),
-    prompt: {
-      risk: resolved.transport === 'stdio' ? 'dangerous' : 'unknown',
-      riskLabel:
-        resolved.transport === 'stdio'
-          ? 'mcp.connect · 项目配置将启动本机 MCP 进程'
-          : 'mcp.connect · 项目配置将连接外部 MCP 服务',
-      summary: server.name + ' (' + resolved.transport + ')',
-      message: [
+  const approvalArgs = firstCall
+    ? ['connect-call', server.name, resolved.hash, firstCall.name, firstCall.arguments ?? {}]
+    : ['connect', server.name, resolved.hash];
+  const argumentKeys = Object.keys(firstCall?.arguments ?? {}).sort();
+  const riskLabel = firstCall
+    ? 'mcp.tool · 项目配置首次连接并调用下游工具'
+    : resolved.transport === 'stdio'
+      ? 'mcp.connect · 项目配置将启动本机 MCP 进程'
+      : 'mcp.connect · 项目配置将连接外部 MCP 服务';
+  const summary = firstCall
+    ? server.name + ':' + firstCall.name
+    : server.name + ' (' + resolved.transport + ')';
+  const message = firstCall
+    ? [
+        '项目级 .mcp.json 首次连接，并准备调用下游 MCP 工具。',
+        '确认后会产生真实副作用：stdio 会启动本机进程；HTTP 会连接网络服务；随后执行本次工具调用。',
+        '',
+        'server：' + server.name,
+        'transport：' + resolved.transport,
+        'config：' + JSON.stringify(resolved.display),
+        'tool：' + firstCall.name,
+        'argument keys：' + argumentKeys.join(', '),
+      ].join('\n')
+    : [
         '项目级 .mcp.json 请求首次连接下游 MCP。',
         '确认后会产生真实副作用：stdio 会启动本机进程；HTTP 会连接网络服务。',
         '',
         'server：' + server.name,
         'transport：' + resolved.transport,
         'config：' + JSON.stringify(resolved.display),
-      ].join('\n'),
+      ].join('\n');
+
+  const approval = await enforceApproval({
+    codec: approvals,
+    sessionId,
+    tool: 'mcp_tool',
+    argsHash: hashArgs(approvalArgs),
+    ...(approvalToken ? { approvalToken } : {}),
+    ...(approvalDecision ? { approvalDecision } : {}),
+    ...(observe ? { observer: observe } : {}),
+    prompt: {
+      risk: resolved.transport === 'stdio' ? 'dangerous' : 'unknown',
+      riskLabel,
+      summary,
+      message,
       fields: {
         server: server.name,
         source: server.source,
         transport: resolved.transport,
+        ...(firstCall
+          ? {
+              tool: firstCall.name,
+              argumentKeys,
+            }
+          : {}),
       },
     },
   });

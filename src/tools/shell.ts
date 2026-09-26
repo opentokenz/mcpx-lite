@@ -15,7 +15,7 @@ const KILL_GRACE_MS = 5_000;
 
 export const shellSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
-  command: z.string().min(1).describe('shell 命令，由 session 的 Shell Runtime 执行，默认工作目录是 session.base'),
+  command: z.string().min(1).describe('shell 命令，由 session 的 Shell Runtime 执行，默认工作目录是 session.workspace'),
   timeout: z
     .number()
     .int()
@@ -26,10 +26,10 @@ export const shellSchema = withGoalReason({
   ...APPROVAL_INPUT_FIELDS,
 });
 
-export const SHELL_DESCRIPTION = `在真实机器上执行 Shell 命令，返回 stdout / stderr / exitCode（cwd 默认为 session.base）。
+export const SHELL_DESCRIPTION = `在真实机器上执行 Shell 命令，返回 stdout / stderr / exitCode（cwd 默认为 session.workspace）。
 
-用途：运行真实机器上的命令，例如测试、编译、Git 与只读查询。默认 cwd 是 session.base，
-但命令可以访问 base 之外的路径、网络和进程，因此可能产生真实且持久的副作用。
+用途：运行真实机器上的命令，例如测试、编译、Git 与只读查询。默认 cwd 是 session.workspace，
+但命令可以访问 workspace 之外的路径、网络和进程，因此可能产生真实且持久的副作用。
 需要删除文件或目录时优先使用 trash 工具；shell 的 rm / rmdir 仍按危险命令要求审核。
 
 参数：
@@ -87,7 +87,7 @@ export function createShellTool(approvals: ApprovalCodec): ToolDef {
 
       const startedAt = Date.now();
       const child = spawn('/bin/bash', ['-c', args.command], {
-        cwd: session.base,
+        cwd: session.workspace,
         env: process.env,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -114,7 +114,7 @@ export function createShellTool(approvals: ApprovalCodec): ToolDef {
         durationMs: Date.now() - startedAt,
         stdoutTruncated: stdout.truncated(),
         stderrTruncated: stderr.truncated(),
-        cwd: session.base,
+        cwd: session.workspace,
       };
     },
   });

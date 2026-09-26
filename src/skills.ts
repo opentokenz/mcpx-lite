@@ -26,7 +26,7 @@ const MAX_DESCRIPTION = 300;
 const MAX_CONTENT = 200_000;
 
 /**
- * 扫描 `~/.agents/skills` 与 `<base>/.agents/skills` 的 skill 元数据。
+ * 扫描 `~/.agents/skills` 与 `<workspace>/.agents/skills` 的 skill 元数据。
  *
  * 只在 `scan`/`get` 时读文件头 16 KiB 解析 frontmatter，正文永远不进入索引；
  * project 目录的同名 skill 覆盖 global。
@@ -38,10 +38,10 @@ export class SkillIndex {
     this.globalSkillsDir = opts.globalSkillsDir ?? join(homedir(), SKILLS_SUBDIR);
   }
 
-  async scan(base: string): Promise<SkillMeta[]> {
+  async scan(workspace: string): Promise<SkillMeta[]> {
     const [globalSkills, projectSkills] = await Promise.all([
       scanDir(this.globalSkillsDir, 'global'),
-      scanDir(join(base, SKILLS_SUBDIR), 'project'),
+      scanDir(join(workspace, SKILLS_SUBDIR), 'project'),
     ]);
 
     const merged = new Map<string, SkillMeta>();
@@ -51,8 +51,8 @@ export class SkillIndex {
     return [...merged.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   }
 
-  async get(base: string, name: string): Promise<SkillContent | undefined> {
-    const meta = (await this.scan(base)).find((skill) => skill.name === name);
+  async get(workspace: string, name: string): Promise<SkillContent | undefined> {
+    const meta = (await this.scan(workspace)).find((skill) => skill.name === name);
     if (!meta) return undefined;
 
     const raw = await readFile(meta.path, 'utf8');

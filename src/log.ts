@@ -1,4 +1,5 @@
-import { displayWidth, padToWidth, paint, truncateToWidth, wrapToWidth, type AnsiStyle } from './ansi.js';
+import { isAbsolute, relative, sep } from 'node:path';
+import { displayWidth, paint, sanitizeTerminalText, truncateToWidth, wrapToWidth } from './ansi.js';
 
 export type LogLevel = 'debug' | 'info' | 'off';
 
@@ -15,6 +16,8 @@ export interface ToolLogEntry {
   riskLevel?: 'dangerous' | 'unknown';
   /** call 阶段：对什么操作（命令首行 / 解析后的路径 / `action name`） */
   target?: string;
+  /** session.workspace；用于把 workspace 内文件路径显示成相对路径 */
+  workspace?: string;
   /** approved / declined 阶段：展示用的风险标签 `kind · reason` */
   riskLabel?: string;
   /** approved / declined 阶段：补充说明（拒绝原因等） */
@@ -41,11 +44,29 @@ export interface LoggerOptions {
 }
 
 const MAX_VALUE_LENGTH = 400;
-const LABEL_WIDTH = 9;
-const MIN_WIDTH = 64;
-const MAX_WIDTH = 100;
-const DEFAULT_WIDTH = 88;
+const STDOUT_PREVIEW_LENGTH = 800;
+const MIN_WIDTH = 40;
+const MAX_WIDTH = 160;
+const DEFAULT_WIDTH = 100;
 const SLOW_MS = 3_000;
+
+/** 工具调用 → agent transcript 动词。 */
+const TOOL_VERBS: Record<string, string> = {
+  session: 'Session',
+  skills: 'Skills',
+  mcp_tool: 'MCP',
+  read: 'Read',
+  write: 'Wrote',
+  edit: 'Edited',
+  trash: 'Trashed',
+  shell: 'Ran',
+  export: 'Exported',
+};
+
+const AUDIT_KEYS = new Set(['session', 'goal', 'reason']);
+const TARGET_KEYS = new Set(['command', 'path', 'paths']);
+const OUTPUT_KEYS = new Set(['stdout', 'stderr']);
+const RESULT_KEYS = new Set(['result', 'risk']);
 
 /** 工具名 → 稳定颜色（同一工具跨调用颜色一致）。 */
 const TOOL_COLORS: Record<string, string> = {
@@ -60,14 +81,10 @@ const TOOL_COLORS: Record<string, string> = {
   export: '38;5;141',
 };
 
-/** 有完整卡片的阶段；`call` / `approved` / `declined` 只占一行（见 progressLine）。 */
+/** 需要渲染结果块的阶段；`call` / `approved` / `declined` 只占一行。 */
 type CardPhase = 'done' | 'fail' | 'required';
 
-const STATUS: Record<CardPhase, { label: string; style: AnsiStyle }> = {
-  done: { label: 'SUCCESS', style: { color: '32' } },
-  fail: { label: 'FAILED', style: { color: '31' } },
-  required: { label: 'APPROVAL REQUIRED', style: { color: '33', bold: true } },
-};
+const APPROVAL_REQUIRED_LABEL = 'APPROVAL REQUIRED';
 
 export function resolveLogLevel(raw: string | undefined | null): LogLevel {
   switch ((raw ?? '').trim().toLowerCase()) {
@@ -121,7 +138,7 @@ function truncate(value: string): string {
   return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…` : value;
 }
 
-/** 事件行字段：字符串 JSON 化（带引号），其它走 JSON —— 保持与旧日志兼容的可读格式。 */
+/** 事件行字段：字符串 JSON 化（带引号），其它走 JSON，保持可读格式。 */
 function formatEventFields(fields: Record<string, unknown> | undefined): string {
   if (!fields) return '';
   const parts: string[] = [];
@@ -140,6 +157,167 @@ function formatEventFields(fields: Record<string, unknown> | undefined): string 
   return parts.join(' ');
 }
 
+function toolVerb(tool: string): string {
+  return TOOL_VERBS[tool] ?? tool;
+}
+
+function fieldText(value: unknown): string | undefined {
+  if (Array.isArray(value)) return value.map(String).join(', ');
+  return fieldValue(value);
+}
+
+function targetText(entry: ToolLogEntry): string | undefined {
+  if (entry.target?.trim()) return displayTarget(entry, entry.target.trim());
+  const fields = entry.fields ?? {};
+  for (const key of TARGET_KEYS) {
+    const value = fieldText(fields[key]);
+    if (value) return displayTarget(entry, value);
+  }
+  return undefined;
+}
+
+function displayTarget(entry: ToolLogEntry, target: string): string {
+  if (!entry.workspace || !isAbsolute(target)) return target;
+  const rel = relative(entry.workspace, target);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return target;
+  return rel;
+}
+
+function titleLine(entry: ToolLogEntry, columns: number, colors: boolean): string {
+  const target = targetText(entry);
+  const bullet = paint('•', { dim: true }, colors);
+  const verb = paint(toolVerb(entry.tool), { color: TOOL_COLORS[entry.tool] ?? '37', bold: true }, colors);
+  const command = target ? `  ${paint(target, { color: '36' }, colors)}` : '';
+  return truncateToWidth(`${bullet} ${verb}${command}`, columns);
+}
+
+function segmentLines(segments: string[], columns: number, colors: boolean): string[] {
+  if (segments.length === 0) return [];
+  const separator = paint(' · ', { dim: true }, colors);
+  const width = Math.max(8, columns - 2);
+  const lines: string[] = [];
+  let current = '';
+
+  for (const segment of segments) {
+    const candidate = current ? `${current}${separator}${segment}` : segment;
+    if (displayWidth(candidate) <= width) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      lines.push(`  ${current}`);
+      current = '';
+    }
+
+    const wrapped = wrapToWidth(segment, width);
+    for (const line of wrapped.slice(0, -1)) lines.push(`  ${line}`);
+    current = wrapped.at(-1) ?? '';
+  }
+
+  if (current) lines.push(`  ${current}`);
+  return lines;
+}
+
+function auditLines(entry: ToolLogEntry, columns: number, colors: boolean): string[] {
+  const fields = entry.fields ?? {};
+  const segments: string[] = [];
+  for (const key of ['goal', 'reason', 'session']) {
+    const value = fieldText(fields[key]);
+    if (value) segments.push(`${paint(key, { dim: true }, colors)} ${value}`);
+  }
+  return segmentLines(segments, columns, colors);
+}
+
+function detailLines(entry: ToolLogEntry, columns: number, colors: boolean): string[] {
+  const fields = entry.fields ?? {};
+  const segments: string[] = [];
+  for (const [key, raw] of Object.entries(fields)) {
+    if (AUDIT_KEYS.has(key) || TARGET_KEYS.has(key) || OUTPUT_KEYS.has(key) || RESULT_KEYS.has(key)) continue;
+    const value = fieldText(raw);
+    if (value) segments.push(`${paint(key, { dim: true }, colors)} ${value}`);
+  }
+  return segmentLines(segments, columns, colors);
+}
+
+function outputLines(entry: ToolLogEntry, columns: number, colors: boolean): string[] {
+  const fields = entry.fields ?? {};
+  const lines: string[] = [];
+
+  for (const [key, style] of [
+    ['stdout', { dim: true }],
+    ['stderr', { color: '31' }],
+  ] as const) {
+    const raw = fieldText(fields[key]);
+    if (!raw) continue;
+
+    const clean = sanitizeTerminalText(raw).replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+    if (!clean) continue;
+
+    const truncated = clean.length > STDOUT_PREVIEW_LENGTH;
+    const preview = truncated ? clean.slice(0, STDOUT_PREVIEW_LENGTH) : clean;
+    const wrapped = wrapToWidth(preview, Math.max(8, columns - 4));
+    const connector = paint(key === 'stderr' ? '!' : '└', { dim: true }, colors);
+
+    lines.push(`  ${connector} ${paint(wrapped[0] ?? '', style, colors)}`);
+    for (const line of wrapped.slice(1)) lines.push(`    ${paint(line, style, colors)}`);
+    if (truncated) {
+      lines.push(`    ${paint(`… (+${clean.length - STDOUT_PREVIEW_LENGTH} chars)`, { dim: true }, colors)}`);
+    }
+  }
+
+  return lines;
+}
+
+function statusLines(entry: ToolLogEntry, phase: CardPhase, columns: number, colors: boolean): string[] {
+  const duration = entry.ms === undefined ? undefined : formatDuration(entry.ms);
+  const slow = entry.ms !== undefined && entry.ms >= SLOW_MS;
+  const durationText = duration === undefined ? '' : paint(duration, slow ? { color: '33', bold: true } : { dim: true }, colors);
+
+  if (phase === 'required') {
+    const unknown = entry.riskLevel === 'unknown';
+    const label = unknown ? 'RISK UNKNOWN' : APPROVAL_REQUIRED_LABEL;
+    const risk = fieldText(entry.fields?.['risk']) ?? entry.riskLabel;
+    const line = [
+      `  ${paint('!', { color: '33', bold: true }, colors)}`,
+      paint(label, { color: '33', bold: true }, colors),
+      ...(risk ? [`· ${risk}`] : []),
+    ].join(' ');
+    return wrapToWidth(truncate(line), columns);
+  }
+
+  if (phase === 'fail') {
+    const error = paint(entry.error ?? 'unknown error', { color: '31' }, colors);
+    const prefix = durationText ? `${durationText} · ` : '';
+    return wrapToWidth(`  ${paint('✗', { color: '31', bold: true }, colors)} ${prefix}${error}`, columns);
+  }
+
+  const result = fieldText(entry.fields?.['result']);
+  const parts = [durationText, result].filter((part): part is string => Boolean(part));
+  const suffix = parts.length > 0 ? ` ${parts.join(' · ')}` : '';
+  return wrapToWidth(`  ${paint('✓', { color: '32', bold: true }, colors)}${suffix}`, columns);
+}
+
+function renderBlock(
+  entry: ToolLogEntry,
+  phase: CardPhase,
+  columns: number,
+  colors: boolean,
+  includeHeader: boolean,
+): string[] {
+  const lines: string[] = [];
+  if (includeHeader) {
+    lines.push(
+      ...auditLines(entry, columns, colors),
+      titleLine(entry, columns, colors),
+      ...detailLines(entry, columns, colors),
+    );
+  }
+  lines.push(...outputLines(entry, columns, colors));
+  lines.push(...statusLines(entry, phase, columns, colors));
+  return lines;
+}
+
 export function createLogger(opts: LoggerOptions = {}): Logger {
   const level = opts.level ?? 'debug';
   const sink = opts.write ?? ((line: string) => void process.stderr.write(line));
@@ -153,46 +331,14 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
     if (level !== 'off') sink(`${body}\n`);
   };
 
-  const renderCard = (entry: ToolLogEntry, phase: CardPhase): string[] => {
-    const lines: string[] = [];
+  const pendingCalls = new Map<number, ToolLogEntry>();
+  let needsSeparator = false;
 
-    // 卡片头：工具名 + 编号 + 状态（+ 耗时），时间戳右对齐在填充区末端
-    const toolColor = TOOL_COLORS[entry.tool] ?? '37';
-    const name = paint(entry.tool.toUpperCase(), { color: toolColor, bold: true }, colors);
-    const status = STATUS[phase];
-    const unknown = phase === 'required' && entry.riskLevel === 'unknown';
-    const label = unknown ? 'RISK UNKNOWN' : status.label;
-    const statusStyle: AnsiStyle = unknown ? { color: '33', bold: true } : status.style;
-
-    const duration = entry.ms === undefined ? undefined : formatDuration(entry.ms);
-    const slow = duration !== undefined && (entry.ms ?? 0) >= SLOW_MS;
-    const clockText = paint(now().toISOString().slice(11, 23), { dim: true }, colors);
-    const rightText =
-      duration === undefined
-        ? clockText
-        : `${paint(duration, slow ? { color: '33', bold: true } : { dim: true }, colors)}  ${clockText}`;
-
-    const head = `${name}  #${entry.id}  ${paint(label, statusStyle, colors)}`;
-    const used = 3 + displayWidth(head) + 2 + displayWidth(rightText) + 2;
-    const fill = Math.max(1, columns - used);
-    const headLine = `┌─ ${head} ${paint('─'.repeat(fill), { dim: true }, colors)} ${rightText} ┐`;
-    lines.push(headLine);
-
-    const inner = columns - 4;
-    const valueWidth = Math.max(8, inner - LABEL_WIDTH);
-
-    for (const [key, raw] of Object.entries(entry.fields ?? {})) {
-      const value = fieldValue(raw);
-      if (value === undefined) continue;
-      renderField(lines, key, truncate(value), valueWidth, colors);
+  const beginBlock = (): void => {
+    if (needsSeparator) {
+      sink('\n');
+      needsSeparator = false;
     }
-
-    if (entry.phase === 'fail') {
-      renderField(lines, 'error', truncate(entry.error ?? 'unknown error'), valueWidth, colors, { color: '31' });
-    }
-
-    lines.push(`└${'─'.repeat(Math.max(1, columns - 2))}┘`);
-    return lines;
   };
 
   return {
@@ -201,71 +347,61 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
       if (level === 'off') return;
 
       const phase = entry.phase;
-      const line = (): string => {
-        const timestamp = now().toISOString();
-        // 时间戳也占宽度，剩下的才是单行内容的可用列数
-        return `${timestamp} ${progressLine(entry, colors, Math.max(1, columns - timestamp.length - 1))}`;
-      };
 
       if (phase === 'call') {
-        // 调用起点只占一行，且只在 debug 输出（完整信息都在结果/确认卡片里）
-        if (level === 'debug') sink(`${line()}\n`);
+        pendingCalls.set(entry.id, entry);
+        if (level === 'debug') {
+          beginBlock();
+          for (const line of [
+            ...auditLines(entry, columns, colors),
+            titleLine(entry, columns, colors),
+            ...detailLines(entry, columns, colors),
+          ]) {
+            sink(`${line}\n`);
+          }
+        }
         return;
       }
 
       if (phase === 'approved' || phase === 'declined') {
-        // 确认结果也只占一行：完整上下文在 required 卡片与结果卡片上
-        sink(`${line()}\n`);
+        sink(`${progressLine(entry, colors, columns)}\n`);
+        needsSeparator = true;
         return;
       }
 
-      for (const cardLine of renderCard(entry, phase)) sink(`${cardLine}\n`);
+      const hadPendingCall = pendingCalls.delete(entry.id);
+      const includeHeader = level !== 'debug' || !hadPendingCall;
+      beginBlock();
+      for (const line of renderBlock(entry, phase, columns, colors, includeHeader)) sink(`${line}\n`);
+      needsSeparator = true;
     },
     event(name, fields, eventLevel = 'info') {
       if (level === 'off') return;
       if (eventLevel === 'debug' && level !== 'debug') return;
 
+      const separated = needsSeparator;
+      if (separated) beginBlock();
       const body = formatEventFields(fields);
       if (eventLevel === 'debug') {
         // 底层诊断信息：视觉层级弱于工具卡片
         emit(`${now().toISOString()} ${paint(`· ${name}`, { dim: true }, colors)}${body ? ` ${body}` : ''}`);
+        needsSeparator = separated;
         return;
       }
       emit(`${now().toISOString()} event ${paint(name, { color: '36' }, colors)}${body ? ` ${body}` : ''}`);
+      needsSeparator = separated;
     },
   };
 }
 
-/** 调用起点 / 确认结果：单行状态，不重复结果卡片里的字段。 */
+/** 确认结果：单行状态，不重复结果块里的字段。 */
 function progressLine(entry: ToolLogEntry, colors: boolean, width: number): string {
   const tool = paint(entry.tool.toUpperCase(), { color: TOOL_COLORS[entry.tool] ?? '37', bold: true }, colors);
   const id = paint(`#${entry.id}`, { dim: true }, colors);
-
-  if (entry.phase === 'call') {
-    const arrow = paint('→', { dim: true }, colors);
-    return truncateToWidth(`${arrow} ${tool} ${id}${entry.target ? `  ${entry.target}` : ''}`, width);
-  }
 
   const approved = entry.phase === 'approved';
   const symbol = paint(approved ? '✓' : '✗', { color: approved ? '32' : '31', bold: true }, colors);
   // 拒绝时只留原因（风险标签已经在 required 卡片上给过了）；确认通过则留风险标签
   const detail = entry.note ?? entry.riskLabel ?? '';
   return truncateToWidth(`${symbol} ${tool} ${id}${detail ? `  ${detail}` : ''}`, width);
-}
-
-function renderField(
-  lines: string[],
-  label: string,
-  value: string,
-  width: number,
-  colors: boolean,
-  style: AnsiStyle = {},
-): void {
-  const labelText = paint(label.padEnd(LABEL_WIDTH), { dim: true }, colors);
-
-  for (const line of wrapToWidth(value, width)) {
-    const painted = paint(line, style, colors);
-    // 补白按可见宽度计算，ANSI 不计入
-    lines.push(`│ ${labelText}${padToWidth(painted, width)} │`);
-  }
 }

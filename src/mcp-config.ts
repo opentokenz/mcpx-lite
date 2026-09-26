@@ -55,11 +55,11 @@ export type ResolvedMcpServer =
     };
 
 export async function loadMcpConfig(opts: {
-  base: string;
+  workspace: string;
   globalPath?: string;
 }): Promise<EffectiveMcpConfig> {
   const globalPath = opts.globalPath ?? join(homedir(), '.agents', 'mcp.json');
-  const projectPath = join(opts.base, '.mcp.json');
+  const projectPath = join(opts.workspace, '.mcp.json');
 
   const globalServers = await readConfigFile(globalPath, 'global');
   const projectServers = await readConfigFile(projectPath, 'project');

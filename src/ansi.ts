@@ -46,6 +46,14 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '');
 }
 
+/** 清理不可信输出中的终端控制序列，保留普通文本、换行与 tab。 */
+export function sanitizeTerminalText(text: string): string {
+  return text
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+}
+
 function charWidth(char: string): number {
   const code = char.codePointAt(0) ?? 0;
   if (isZeroWidth(code)) return 0;

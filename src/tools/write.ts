@@ -2,18 +2,18 @@ import { stat } from 'node:fs/promises';
 import * as z from 'zod/v4';
 import {
   APPROVAL_INPUT_FIELDS,
-  enforceBaseBoundary,
+  enforceWorkspaceBoundary,
   hashArgs,
   type ApprovalCodec,
 } from '../approval.js';
 import { ToolError } from '../errors.js';
 import { realpathDeep, writeFileAtomic } from '../paths.js';
 import { defineTool, describePath, withGoalReason, type ToolDef } from '../registry.js';
-import { isInsideBase, resolvePath } from '../session.js';
+import { isInsideWorkspace, resolvePath } from '../session.js';
 
 export const writeSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
-  path: z.string().min(1).describe('相对路径基于 session.base 解析；绝对路径直接使用；允许 ..'),
+  path: z.string().min(1).describe('相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..'),
   content: z.string().describe('要写入的完整文件内容（覆盖写，不是追加）'),
   ...APPROVAL_INPUT_FIELDS,
 });
@@ -25,15 +25,15 @@ export const WRITE_DESCRIPTION = `创建或覆盖文件（整文件写入，不�
 
 参数：
 - sessionId：必填
-- path：相对路径基于 session.base 解析；绝对路径直接使用；允许 ..
+- path：相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..
 - content：完整文件内容（UTF-8）
 - goal / reason：可选审计字段；提供时写入 session history
 
 行为：自动创建缺失的父目录；写入使用「临时文件 + rename」原子替换；返回 path / bytes / created。
 
-base 边界门禁（服务端强制执行）：
-- base 内真实目标直接写入。
-- base 外或真实路径无法解析时先返回 approval_required；确认前不写文件。
+workspace 边界门禁（服务端强制执行）：
+- workspace 内真实目标直接写入。
+- workspace 外或真实路径无法解析时先返回 approval_required；确认前不写文件。
 - 用户确认后用原 path / content 携带 approvalToken + approvalDecision=approve 重试。
 
 示例：
@@ -47,18 +47,21 @@ export function createWriteTool(approvals: ApprovalCodec): ToolDef {
     schema: writeSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     requiresSession: true,
-    describeCall: (args, session) => describePath(session, args.path),
+    describeCall: (args, session) => {
+      const info = describePath(session, args.path);
+      return { ...info, fields: { ...info.fields, bytes: Buffer.byteLength(args.content, 'utf8') } };
+    },
     handler: async (args, _ctx, session, observe) => {
       if (!session) throw new ToolError('write 需要有效 sessionId');
 
-      const absolute = resolvePath(session.base, args.path);
+      const absolute = resolvePath(session.workspace, args.path);
       const existed = await exists(absolute);
       const bytes = Buffer.byteLength(args.content, 'utf8');
 
       // 目标可能尚不存在，用 realpathDeep 求「真实目标」；解析不出来就按 fail closed 处理
       const target = await realpathDeep(absolute);
-      if (target === null || !isInsideBase(session.base, target)) {
-        const approval = await enforceBaseBoundary({
+      if (target === null || !isInsideWorkspace(session.workspace, target)) {
+        const approval = await enforceWorkspaceBoundary({
           codec: approvals,
           sessionId: session.id,
           tool: 'write',
@@ -68,7 +71,7 @@ export function createWriteTool(approvals: ApprovalCodec): ToolDef {
           action: '写入',
           path: absolute,
           target,
-          base: session.base,
+          workspace: session.workspace,
           fields: { bytes },
           observer: observe,
         });

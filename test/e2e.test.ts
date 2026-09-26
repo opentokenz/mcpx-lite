@@ -36,7 +36,7 @@ describe('export 工具（进程内）', () => {
     await writeFile(join(h.workspace, 'dist', 'report.pdf'), PDF_BYTES);
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付产物', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付产物', reason: '开始任务' }),
     );
     const outcome = await h.callTool('export', {
       sessionId: created['sessionId'] as string,
@@ -63,13 +63,13 @@ describe('export 工具（进程内）', () => {
     });
   });
 
-  it('base 外导出需要确认（确认前不签发链接）；目录与不存在的文件报错', async () => {
+  it('workspace 外导出需要确认（确认前不签发链接）；目录与不存在的文件报错', async () => {
     const outside = join(h.workspace, '..', 'outside-artifact.txt');
     await writeFile(outside, 'artifact\n', 'utf8');
     await mkdir(join(h.workspace, 'adir'), { recursive: true });
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const sessionId = created['sessionId'] as string;
     const exportFile = (args: Record<string, unknown>) =>
@@ -79,7 +79,7 @@ describe('export 工具（进程内）', () => {
     // 首轮：只返回审核卡片/token，不签发任何下载链接
     const gated = await h.callTool('export', exportArgs);
     expect(expectApproval(gated).approvalToken).toMatch(/^apr_/);
-    expect(h.logs.join('\n')).toContain('export.outside-base');
+    expect(h.logs.join('\n')).toContain('export.outside-workspace');
     expect(h.logs.some((line) => line.includes('download-mint'))).toBe(false);
 
     // 确认后才签发链接
@@ -97,7 +97,7 @@ describe('export 工具（进程内）', () => {
     await writeFile(join(h.workspace, 'dist', 'inline.zip'), bytes);
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const outcome = await h.callTool('export', {
       sessionId: created['sessionId'] as string,
@@ -132,10 +132,9 @@ describe('export 工具（进程内）', () => {
     // 内联模式不签发下载链接
     expect(h.logs.some((line) => line.includes('download-mint'))).toBe(false);
 
-    // base64 正文（连同 sha256）不会进终端日志：卡片只记块数与类型
+    // base64 正文（连同 sha256）不会进终端日志：摘要只记块数与类型
     const flat = h.logs.join('').replace(/[│\s]+/g, '');
-    expect(flat).toContain('"blocks":2');
-    expect(flat).toContain('["resource","text"]');
+    expect(flat).toContain('2blocks·resource,text');
     expect(flat).not.toContain(embedded?.resource.blob ?? 'x');
     expect(flat).not.toContain(String(summary['sha256']));
   });
@@ -145,7 +144,7 @@ describe('export 工具（进程内）', () => {
     await writeFile(join(h.workspace, 'dist', 'big.bin'), Buffer.alloc(1_048_577, 1));
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const message = expectError(
       await h.callTool('export', {
@@ -161,13 +160,13 @@ describe('export 工具（进程内）', () => {
     expect(message).toMatch(/delivery=link/);
   });
 
-  it('base 外 + delivery=base64：确认前不读内容、不返回数据', async () => {
+  it('workspace 外 + delivery=base64：确认前不读内容、不返回数据', async () => {
     const outside = join(h.workspace, '..', 'outside-inline.bin');
     const bytes = Buffer.from('SECRET-INLINE-BYTES');
     await writeFile(outside, bytes);
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const args = {
       sessionId: created['sessionId'] as string,
@@ -181,7 +180,7 @@ describe('export 工具（进程内）', () => {
 
     expectApproval(first);
     expect(first.text).not.toContain(bytes.toString('base64'));
-    expect(h.logs.join('\n')).toContain('export.outside-base');
+    expect(h.logs.join('\n')).toContain('export.outside-workspace');
 
     const approved = await h.callToolApproving('export', args);
     const embedded = approved.content?.[0] as { resource: { blob: string } } | undefined;
@@ -193,7 +192,7 @@ describe('export 工具（进程内）', () => {
     await writeFile(outside, 'x', 'utf8');
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const sessionId = created['sessionId'] as string;
     const first = await h.callTool('export', { sessionId, path: outside, goal: '交付', reason: '需要文件' });
@@ -211,7 +210,7 @@ describe('export 工具（进程内）', () => {
     await writeFile(outside, 'audit-fields', 'utf8');
 
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace }),
     );
     const sessionId = created['sessionId'] as string;
     const firstArgs = {
@@ -236,7 +235,7 @@ describe('export 工具（进程内）', () => {
   it('history 只记录路径与原因，不记录文件内容', async () => {
     await writeFile(join(h.workspace, 'secret.bin'), 'TOPSECRET-BYTES', 'utf8');
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const sessionId = created['sessionId'] as string;
 
@@ -294,7 +293,7 @@ describe('真实 HTTP 端到端', () => {
     const created = expectOk(
       await client.callTool('session', {
         action: 'create',
-        base: h.workspace,
+        workspace: h.workspace,
         goal: '生成并交付产物',
         reason: '用户要求产出文件',
       }),
@@ -358,7 +357,7 @@ describe('真实 HTTP 端到端', () => {
     await mkdir(join(h.workspace, 'dist'), { recursive: true });
     await writeFile(join(h.workspace, 'dist', 'a.txt'), 'a\n', 'utf8');
 
-    const created = expectOk(await client.callTool('session', { action: 'create', base: h.workspace, goal: 'g', reason: 'r' }));
+    const created = expectOk(await client.callTool('session', { action: 'create', workspace: h.workspace, goal: 'g', reason: 'r' }));
     const exported = expectOk(
       await client.callTool('export', {
         sessionId: created['sessionId'] as string,
@@ -437,7 +436,7 @@ describe('真实 HTTP 端到端', () => {
     await writeFile(join(h.workspace, 'dist', 'a.txt'), 'a\n', 'utf8');
 
     const created = expectOk(
-      await client.callTool('session', { action: 'create', base: h.workspace, goal: '交付', reason: '开始任务' }),
+      await client.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const sessionId = created['sessionId'] as string;
 
@@ -487,7 +486,7 @@ describe('真实 HTTP 端到端：安全确认（MRTR）', () => {
     const client = server.client;
 
     const created = expectOk(
-      await client.callTool('session', { action: 'create', base: h.workspace, goal: 'g', reason: 'r' }),
+      await client.callTool('session', { action: 'create', workspace: h.workspace, goal: 'g', reason: 'r' }),
     );
     const sessionId = created['sessionId'] as string;
 
@@ -514,12 +513,12 @@ describe('真实 HTTP 端到端：安全确认（MRTR）', () => {
     await expect(access(gated)).resolves.toBeUndefined();
   });
 
-  it('base 外 edit 两轮流程：确认后写入真实目标，approval 事件进入观测日志', async () => {
+  it('workspace 外 edit 两轮流程：确认后写入真实目标，approval 事件进入观测日志', async () => {
     server = await h.startHttpServer();
     const client = server.client;
 
     const created = expectOk(
-      await client.callTool('session', { action: 'create', base: h.workspace, goal: 'g', reason: 'r' }),
+      await client.callTool('session', { action: 'create', workspace: h.workspace, goal: 'g', reason: 'r' }),
     );
     const sessionId = created['sessionId'] as string;
 
@@ -548,6 +547,6 @@ describe('真实 HTTP 端到端：安全确认（MRTR）', () => {
     // 安全事件以卡片状态进入观测日志
     expect(h.logs.some((line) => line.includes('APPROVAL REQUIRED'))).toBe(true);
     expect(h.logs.some((line) => line.includes('✓ EDIT'))).toBe(true);
-    expect(h.logs.some((line) => line.includes('edit.outside-base'))).toBe(true);
+    expect(h.logs.some((line) => line.includes('edit.outside-workspace'))).toBe(true);
   });
 });

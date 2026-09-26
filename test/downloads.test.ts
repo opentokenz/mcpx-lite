@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TokenStore, createFilesRoute } from '../src/downloads.js';
 
 let root: string;
-let base: string;
+let workspace: string;
 let outside: string;
 let clock: number;
 let tokens: TokenStore;
@@ -35,13 +35,13 @@ async function startFilesServer(store: TokenStore) {
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'mini-pi-downloads-'));
-  base = join(root, 'project');
+  workspace = join(root, 'project');
   outside = join(root, 'outside');
-  await mkdir(join(base, 'dist'), { recursive: true });
+  await mkdir(join(workspace, 'dist'), { recursive: true });
   await mkdir(outside, { recursive: true });
-  await writeFile(join(base, 'dist', 'report.pdf'), PDF_BYTES);
-  await writeFile(join(base, 'notes.txt'), 'hello\n', 'utf8');
-  await writeFile(join(outside, 'other.txt'), 'outside base\n', 'utf8');
+  await writeFile(join(workspace, 'dist', 'report.pdf'), PDF_BYTES);
+  await writeFile(join(workspace, 'notes.txt'), 'hello\n', 'utf8');
+  await writeFile(join(outside, 'other.txt'), 'outside workspace\n', 'utf8');
   clock = Date.parse('2026-09-26T00:00:00.000Z');
   tokens = new TokenStore({ now: () => clock });
 });
@@ -52,7 +52,7 @@ afterEach(async () => {
 
 describe('TokenStore', () => {
   it('mint 返回 token / name / mimeType / size / expiresAt，token 不透明且不可预测', async () => {
-    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'dist', 'report.pdf') });
+    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'dist', 'report.pdf') });
 
     expect(record.token).toMatch(/^file_[A-Za-z0-9_-]{32}$/);
     expect(record.name).toBe('report.pdf');
@@ -61,33 +61,33 @@ describe('TokenStore', () => {
     expect(record.expiresAt).toBe('2026-09-26T00:05:00.000Z');
     expect(record.sessionId).toBe('ses_abc123def456');
 
-    const second = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'notes.txt') });
+    const second = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'notes.txt') });
     expect(second.token).not.toBe(record.token);
   });
 
   it('mimeType 未知扩展名时兜底 octet-stream', async () => {
-    await writeFile(join(base, 'blob.unknownext'), 'x', 'utf8');
+    await writeFile(join(workspace, 'blob.unknownext'), 'x', 'utf8');
 
-    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'blob.unknownext') });
+    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'blob.unknownext') });
 
     expect(record.mimeType).toBe('application/octet-stream');
   });
 
   it('mint 对目录、不存在的文件报错', async () => {
-    await expect(tokens.mint({ sessionId: 'ses_abc123def456', path: base })).rejects.toThrow(/not a regular file/);
-    await expect(tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'missing') })).rejects.toThrow(
+    await expect(tokens.mint({ sessionId: 'ses_abc123def456', path: workspace })).rejects.toThrow(/not a regular file/);
+    await expect(tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'missing') })).rejects.toThrow(
       /does not exist/,
     );
   });
 
-  it('base 之外的文件也能 mint（base 不是下载边界）', async () => {
+  it('workspace 之外的文件也能 mint（workspace 不是下载边界）', async () => {
     const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(outside, 'other.txt') });
 
     expect(record.path).toBe(join(outside, 'other.txt'));
   });
 
   it('verify 未过期返回记录，过期或未知返回 undefined，并清理过期项', async () => {
-    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'notes.txt') });
+    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'notes.txt') });
 
     expect(tokens.verify(record.token)).toEqual(record);
     expect(tokens.verify('file_' + 'x'.repeat(32))).toBeUndefined();
@@ -102,7 +102,7 @@ describe('TokenStore', () => {
 describe('GET /files/:token', () => {
   it('返回与源文件字节一致的内容与响应头', async () => {
     const server = await startFilesServer(tokens);
-    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'dist', 'report.pdf') });
+    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'dist', 'report.pdf') });
 
     const response = await fetch(`${server.origin}/files/${record.token}`);
     const body = Buffer.from(await response.arrayBuffer());
@@ -118,9 +118,9 @@ describe('GET /files/:token', () => {
   });
 
   it('中文文件名走 filename* 编码', async () => {
-    await writeFile(join(base, '报告.txt'), 'ok\n', 'utf8');
+    await writeFile(join(workspace, '报告.txt'), 'ok\n', 'utf8');
     const server = await startFilesServer(tokens);
-    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, '报告.txt') });
+    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, '报告.txt') });
 
     const response = await fetch(`${server.origin}/files/${record.token}`);
 
@@ -134,7 +134,7 @@ describe('GET /files/:token', () => {
 
   it('未知 / 篡改 / 过期 token 都是 404', async () => {
     const server = await startFilesServer(tokens);
-    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(base, 'notes.txt') });
+    const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: join(workspace, 'notes.txt') });
     // 篡改要保证一定改了字符，否则随机 token 末位恰好是 b 时会误判
     const tampered = `${record.token.slice(0, -1)}${record.token.endsWith('b') ? 'c' : 'b'}`;
 
@@ -150,7 +150,7 @@ describe('GET /files/:token', () => {
 
   it('mint 之后文件被删除 → 404', async () => {
     const server = await startFilesServer(tokens);
-    const target = join(base, 'temp.txt');
+    const target = join(workspace, 'temp.txt');
     await writeFile(target, 'gone soon', 'utf8');
     const record = await tokens.mint({ sessionId: 'ses_abc123def456', path: target });
     await rm(target, { force: true });

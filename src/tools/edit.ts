@@ -3,7 +3,7 @@ import { APPROVAL_INPUT_FIELDS, enforceApproval, hashArgs, type ApprovalCodec } 
 import { commitPreparedEdits, prepareBatchEdits } from '../edit-batch.js';
 import { ToolError } from '../errors.js';
 import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
-import { isInsideBase, resolvePath } from '../session.js';
+import { isInsideWorkspace, resolvePath } from '../session.js';
 
 const replacementSchema = z.object({
   oldText: z.string().min(1).describe('要被替换的原文；每一步必须恰好匹配一次'),
@@ -11,7 +11,7 @@ const replacementSchema = z.object({
 });
 
 const fileEditSchema = z.object({
-  path: z.string().min(1).describe('相对路径基于 session.base 解析；绝对路径直接使用；允许 ..'),
+  path: z.string().min(1).describe('相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..'),
   replacements: z.array(replacementSchema).min(1).describe('按数组顺序应用的精确字面量替换'),
 });
 
@@ -44,15 +44,15 @@ export function createEditTool(approvals: ApprovalCodec): ToolDef {
     requiresSession: true,
     describeCall: (args, session) => ({
       target: `${args.edits.length} files`,
-      files: session ? args.edits.map((edit) => resolvePath(session.base, edit.path)) : [],
+      files: session ? args.edits.map((edit) => resolvePath(session.workspace, edit.path)) : [],
       fields: { paths: args.edits.map((edit) => edit.path) },
     }),
     handler: async (args, _ctx, session, observe) => {
       if (!session) throw new ToolError('edit 需要有效 sessionId');
 
-      const prepared = await prepareBatchEdits(session.base, args.edits);
+      const prepared = await prepareBatchEdits(session.workspace, args.edits);
 
-      const outsideTargets = prepared.filter((file) => !isInsideBase(session.base, file.target));
+      const outsideTargets = prepared.filter((file) => !isInsideWorkspace(session.workspace, file.target));
       if (outsideTargets.length > 0) {
         const contextHash = hashArgs(prepared.map((file) => [file.target, file.originalHash]));
         const approval = await enforceApproval({
@@ -67,14 +67,14 @@ export function createEditTool(approvals: ApprovalCodec): ToolDef {
           observer: observe,
           prompt: {
             risk: 'dangerous',
-            riskLabel: 'edit.outside-base · 批次包含 session.base 外真实目标',
+            riskLabel: 'edit.outside-workspace · 批次包含 session.workspace 外真实目标',
             summary: `批量编辑 ${prepared.length} 个文件`,
             message: [
-              '这个批量编辑包含 session.base 之外的真实目标：',
+              '这个批量编辑包含 session.workspace 之外的真实目标：',
               '',
               ...outsideTargets.map((file) => `- ${file.target}`),
               '',
-              `base：${session.base}`,
+              `workspace：${session.workspace}`,
             ].join('\n'),
             fields: { paths: outsideTargets.map((file) => file.target) },
           },

@@ -19,9 +19,9 @@ export const GATEWAY_INSTRUCTIONS = [
   '',
   '- 真实副作用：write / edit 直接修改真实文件，export 会把文件内容交给调用方；trash 会把文件或目录移动到系统回收站；shell 命令与 git 操作都会真实生效并持续。edit 在提交失败时会尽力回滚，trash 不 fallback 永久删除，但都没有文件系统级 ACID 或隔离副本。',
   '- 写文件优先用 edit 的 edits[]：每个 replacement 的 oldText 在当时内容中必须恰好匹配一次，同一个真实文件不能重复出现。需要删除文件/目录时优先使用 trash，不要用 rm / rmdir 绕过确认。',
-  '- base 是写类/外带工具（write / edit / export）的信任边界：base 内可直接执行；base 外（../ 穿越、绝对路径、symlink 逃逸）服务端会返回普通 approval_required 审核卡片和一次性 approvalToken。trash 无论目标是否在 base 内都必须确认；read 只读且无副作用，不受 base 限制；shell 可以 cd 到任意目录，它的风险由命令白名单判定。',
+  '- workspace 是写类/外带工具（write / edit / export）的信任边界：workspace 内可直接执行；workspace 外（../ 穿越、绝对路径、symlink 逃逸）服务端会返回普通 approval_required 审核卡片和一次性 approvalToken。trash 无论目标是否在 workspace 内都必须确认；read 只读且无副作用，不受 workspace 限制；shell 可以 cd 到任意目录，它的风险由命令白名单判定。',
   '- 服务端已强制门禁，不能绕过：shell 只有明确安全的命令才直接执行；危险命令、无法静态判断的命令以及越界文件操作会先返回“确认执行 / 取消”审核卡片。调用方必须让用户选择；只有业务参数不变并携带 approvalToken + approvalDecision=approve 的重试才执行。goal / reason 仅用于审计，可变化或省略。',
-  '- 所以先约束自己：删除或大段覆盖代码、rm -rf、git reset / commit / push、发布与配置变更、读取或修改 base 之外的敏感文件，都要先向用户说明要做什么与风险；命中门禁后使用工具返回的审核卡片让用户做选择，不要代替用户确认，也不要反复重试被取消或拒绝的调用。',
+  '- 所以先约束自己：删除或大段覆盖代码、rm -rf、git reset / commit / push、发布与配置变更、读取或修改 workspace 之外的敏感文件，都要先向用户说明要做什么与风险；命中门禁后使用工具返回的审核卡片让用户做选择，不要代替用户确认，也不要反复重试被取消或拒绝的调用。',
   '- 不要假设有网络隔离、备份或自动测试兜底；不确定就先用只读手段（read / shell 查询）核实，并以真实机器上的实际输出与路径为准。',
 ].join('\n');
 
@@ -46,7 +46,7 @@ const historyEntrySchema = z.object({
 
 const sessionFileSchema = z.object({
   id: z.string(),
-  base: z.string(),
+  workspace: z.string().min(1),
   createdAt: z.string(),
   updatedAt: z.string(),
   closedAt: z.string().nullable(),
@@ -57,37 +57,51 @@ const sessionFileSchema = z.object({
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 export type SessionFile = z.infer<typeof sessionFileSchema>;
 
-/**
- * 把工具收到的 path 解析成绝对路径：相对路径基于 `session.base`，绝对路径直接使用。
- * 不做任何「必须位于 base 内」的限制——base 是定位锚点，不是安全边界。
- */
-export function resolvePath(base: string, path: string): string {
-  if (typeof path !== 'string' || !path.trim()) throw new ToolError('path is required');
-  return isAbsolute(path) ? normalize(path) : resolve(base, path);
+function normalizeSessionFile(value: unknown): SessionFile {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('session file must be an object');
+  }
+
+  const record = value as Record<string, unknown>;
+  const workspace = typeof record['workspace'] === 'string' ? record['workspace'] : record['base'];
+  if (typeof workspace !== 'string') throw new Error('session file is missing workspace');
+
+  const normalized: Record<string, unknown> = { ...record, workspace };
+  delete normalized['base'];
+  return sessionFileSchema.parse(normalized);
 }
 
-/** 校验并规范化 session 的 base：必须存在、必须是目录，返回 realpath。 */
-export async function resolveBase(base: string): Promise<string> {
-  if (typeof base !== 'string' || !base.trim()) throw new ToolError('base is required');
+/**
+ * 把工具收到的 path 解析成绝对路径：相对路径基于 `session.workspace`，绝对路径直接使用。
+ * 不做任何「必须位于 workspace 内」的限制——workspace 是定位锚点，不是安全边界。
+ */
+export function resolvePath(workspace: string, path: string): string {
+  if (typeof path !== 'string' || !path.trim()) throw new ToolError('path is required');
+  return isAbsolute(path) ? normalize(path) : resolve(workspace, path);
+}
 
-  const absolute = resolve(base);
+/** 校验并规范化 session 的 workspace：必须存在、必须是目录，返回 realpath。 */
+export async function resolveWorkspace(workspace: string): Promise<string> {
+  if (typeof workspace !== 'string' || !workspace.trim()) throw new ToolError('workspace is required');
+
+  const absolute = resolve(workspace);
   let info;
   try {
     info = await stat(absolute);
   } catch {
-    throw new ToolError(`base does not exist: ${absolute}`);
+    throw new ToolError(`workspace does not exist: ${absolute}`);
   }
-  if (!info.isDirectory()) throw new ToolError(`base is not a directory: ${absolute}`);
+  if (!info.isDirectory()) throw new ToolError(`workspace is not a directory: ${absolute}`);
 
   return realpath(absolute);
 }
 
 /**
- * 目标真实路径是否位于 base 内：两侧都必须是 realpath，用 relative 判断而不是字符串前缀。
- * base 本身不算“内部”（edit 只处理普通文件，不会命中目录）。
+ * 目标真实路径是否位于 workspace 内：两侧都必须是 realpath，用 relative 判断而不是字符串前缀。
+ * workspace 本身不算“内部”（edit 只处理普通文件，不会命中目录）。
  */
-export function isInsideBase(base: string, target: string): boolean {
-  const rel = relative(base, target);
+export function isInsideWorkspace(workspace: string, target: string): boolean {
+  const rel = relative(workspace, target);
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
@@ -122,8 +136,8 @@ export class SessionStore {
     return join(this.sessionsDir, `${id}.json`);
   }
 
-  async create(opts: { base: string; skills?: SkillMeta[] }): Promise<SessionFile> {
-    const base = await resolveBase(opts.base);
+  async create(opts: { workspace: string; skills?: SkillMeta[] }): Promise<SessionFile> {
+    const workspace = await resolveWorkspace(opts.workspace);
     const timestamp = this.now().toISOString();
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -132,7 +146,7 @@ export class SessionStore {
 
       const session: SessionFile = {
         id,
-        base,
+        workspace,
         createdAt: timestamp,
         updatedAt: timestamp,
         closedAt: null,
@@ -158,7 +172,7 @@ export class SessionStore {
     }
 
     try {
-      return sessionFileSchema.parse(JSON.parse(raw));
+      return normalizeSessionFile(JSON.parse(raw));
     } catch {
       throw new ToolError(`session ${id} file is corrupt: ${this.filePath(id)}`);
     }

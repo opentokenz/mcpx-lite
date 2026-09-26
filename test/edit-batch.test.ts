@@ -17,7 +17,7 @@ let sessionId: string;
 beforeEach(async () => {
   h = await createHarness();
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace }),
   );
   sessionId = created['sessionId'] as string;
 });
@@ -90,7 +90,7 @@ describe('batch edit', () => {
     expect(await readFile(real, 'utf8')).toBe('old\n');
   });
 
-  it('任一真实目标位于 base 外时整批一次审批，确认前 0 写入', async () => {
+  it('任一真实目标位于 workspace 外时整批一次审批，确认前 0 写入', async () => {
     const inside = join(h.workspace, 'inside.ts');
     const outside = join(h.home, 'outside.ts');
     await writeFile(inside, 'old-in\n', 'utf8');

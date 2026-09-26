@@ -5,7 +5,7 @@ import type { ServerContext } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import {
   APPROVAL_INPUT_FIELDS,
-  enforceBaseBoundary,
+  enforceWorkspaceBoundary,
   hashArgs,
   type ApprovalCodec,
 } from '../approval.js';
@@ -13,14 +13,14 @@ import { inspectExportable, mimeTypeFor, type TokenStore } from '../downloads.js
 import { ToolError } from '../errors.js';
 import type { Logger } from '../log.js';
 import { defineTool, describePath, withGoalReason } from '../registry.js';
-import { isInsideBase, resolvePath } from '../session.js';
+import { isInsideWorkspace, resolvePath } from '../session.js';
 
 /** base64 内联传输的上限：超过就请用 link 模式，避免把大文件塞进 MCP 响应。 */
 const MAX_INLINE_BYTES = 1_048_576;
 
 export const exportSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
-  path: z.string().min(1).describe('相对路径基于 session.base 解析；绝对路径直接使用；允许 ..'),
+  path: z.string().min(1).describe('相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..'),
   delivery: z
     .enum(['link', 'base64'])
     .default('link')
@@ -43,7 +43,7 @@ export const EXPORT_DESCRIPTION = `把真实机器上的指定文件交给 MCP �
 
 参数：
 - sessionId：必填
-- path：相对路径基于 session.base 解析；绝对路径直接使用；允许 ..
+- path：相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..
 - delivery：link（默认）/ base64
 - goal / reason：可选审计字段；提供时写入 session history
 
@@ -51,9 +51,9 @@ export const EXPORT_DESCRIPTION = `把真实机器上的指定文件交给 MCP �
 - link：resource_link + 文件摘要，临时链接 5 分钟后失效。
 - base64：embedded resource + 文件摘要，内联上限 1 MiB。
 
-base 边界门禁（服务端强制执行）：
-- base 内真实目标直接导出。
-- base 外真实目标先返回 approval_required；确认前不读取内容、不签发链接。
+workspace 边界门禁（服务端强制执行）：
+- workspace 内真实目标直接导出。
+- workspace 外真实目标先返回 approval_required；确认前不读取内容、不签发链接。
 - 用户确认后用原 path / delivery 携带 approvalToken + approvalDecision=approve 重试。
 
 示例：
@@ -84,7 +84,7 @@ export function createExportTool(deps: {
     handler: async (args, ctx: ServerContext, session, observe) => {
       if (!session) throw new ToolError('export 需要有效 sessionId');
 
-      const absolute = resolvePath(session.base, args.path);
+      const absolute = resolvePath(session.workspace, args.path);
       const inline = args.delivery === 'base64';
 
       // 确认之前先做无副作用的前置检查，不让用户为一个不存在的文件（或超限的内联传输）确认
@@ -96,8 +96,8 @@ export function createExportTool(deps: {
       }
 
       const target = await realpath(absolute);
-      if (!isInsideBase(session.base, target)) {
-        const approval = await enforceBaseBoundary({
+      if (!isInsideWorkspace(session.workspace, target)) {
+        const approval = await enforceWorkspaceBoundary({
           codec: approvals,
           sessionId: session.id,
           tool: 'export',
@@ -107,7 +107,7 @@ export function createExportTool(deps: {
           action: '导出',
           path: absolute,
           target,
-          base: session.base,
+          workspace: session.workspace,
           observer: observe,
         });
         if (approval) return approval;

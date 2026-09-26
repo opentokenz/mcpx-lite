@@ -2,13 +2,13 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GATEWAY_INSTRUCTIONS, SessionStore, resolveBase } from '../src/session.js';
+import { GATEWAY_INSTRUCTIONS, SessionStore, resolveWorkspace } from '../src/session.js';
 import type { SessionFile } from '../src/session.js';
 import type { SkillMeta } from '../src/skills.js';
 
 let root: string;
 let home: string;
-let base: string;
+let workspace: string;
 let store: SessionStore;
 let clock: number;
 
@@ -32,8 +32,8 @@ const entry = (reason: string, overrides: Partial<Parameters<SessionStore['appen
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'mini-pi-session-'));
   home = join(root, 'home');
-  base = join(root, 'project');
-  await mkdir(base, { recursive: true });
+  workspace = join(root, 'project');
+  await mkdir(workspace, { recursive: true });
   clock = Date.parse('2026-09-26T00:00:00.000Z');
   store = new SessionStore({ home, now: () => new Date((clock += 1000)) });
 });
@@ -43,21 +43,21 @@ afterEach(async () => {
 });
 
 describe('GATEWAY_INSTRUCTIONS', () => {
-  it('说明这是真实机器网关、base 不是边界、破坏性操作需确认', () => {
+  it('说明这是真实机器网关、workspace 不是边界、破坏性操作需确认', () => {
     expect(GATEWAY_INSTRUCTIONS).toContain('不是沙箱');
     expect(GATEWAY_INSTRUCTIONS).toContain('真实');
-    expect(GATEWAY_INSTRUCTIONS).toContain('base');
+    expect(GATEWAY_INSTRUCTIONS).toContain('workspace');
     expect(GATEWAY_INSTRUCTIONS).toMatch(/向用户|用户确认/);
     expect(GATEWAY_INSTRUCTIONS).toMatch(/删除|rm -rf|git/);
   });
 });
 
 describe('SessionStore.create', () => {
-  it('生成 ses_<12hex> id、落盘 JSON、base 为 realpath 后的绝对路径', async () => {
-    const session = await store.create({ base, skills: [skill('alpha')] });
+  it('生成 ses_<12hex> id、落盘 JSON、workspace 为 realpath 后的绝对路径', async () => {
+    const session = await store.create({ workspace, skills: [skill('alpha')] });
 
     expect(session.id).toMatch(/^ses_[0-9a-f]{12}$/);
-    expect(session.base).toBe(await realpath(base));
+    expect(session.workspace).toBe(await realpath(workspace));
     expect(session.closedAt).toBeNull();
     expect(session.history).toEqual([]);
     expect(session.skills).toEqual([skill('alpha')]);
@@ -67,23 +67,50 @@ describe('SessionStore.create', () => {
     expect(raw.createdAt).toBe('2026-09-26T00:00:01.000Z');
   });
 
-  it('接受相对 base（相对进程 cwd）', async () => {
-    const session = await store.create({ base: relative(process.cwd(), base) });
+  it('接受相对 workspace（相对进程 cwd）', async () => {
+    const session = await store.create({ workspace: relative(process.cwd(), workspace) });
 
-    expect(session.base).toBe(await realpath(base));
+    expect(session.workspace).toBe(await realpath(workspace));
   });
 
-  it('base 不存在或不是目录时报错', async () => {
-    await expect(store.create({ base: join(root, 'missing') })).rejects.toThrow(/base does not exist/);
+  it('workspace 不存在或不是目录时报错', async () => {
+    await expect(store.create({ workspace: join(root, 'missing') })).rejects.toThrow(/workspace does not exist/);
 
     const file = join(root, 'a-file');
     await writeFile(file, 'x', 'utf8');
-    await expect(store.create({ base: file })).rejects.toThrow(/not a directory/);
-    await expect(resolveBase('')).rejects.toThrow(/base/);
+    await expect(store.create({ workspace: file })).rejects.toThrow(/not a directory/);
+    await expect(resolveWorkspace('')).rejects.toThrow(/workspace/);
   });
 });
 
 describe('SessionStore 读取与生命周期', () => {
+  it('读取旧 base 字段的 session 文件并规范为 workspace', async () => {
+    const id = 'ses_0123456789ab';
+    await mkdir(join(home, 'sessions'), { recursive: true });
+    await writeFile(
+      join(home, 'sessions', `${id}.json`),
+      JSON.stringify(
+        {
+          id,
+          base: workspace,
+          createdAt: '2026-09-26T00:00:01.000Z',
+          updatedAt: '2026-09-26T00:00:01.000Z',
+          closedAt: null,
+          skills: [],
+          history: [],
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const session = await store.read(id);
+
+    expect(session.workspace).toBe(workspace);
+    expect(session).not.toHaveProperty('base');
+  });
+
   it('未知 id / 非法 id / 损坏文件都有可读错误', async () => {
     await expect(store.load('ses_000000000000')).rejects.toThrow(/unknown session/);
     await expect(store.load('../../etc/passwd')).rejects.toThrow(/invalid session id/);
@@ -96,7 +123,7 @@ describe('SessionStore 读取与生命周期', () => {
   });
 
   it('close 标记 closedAt 并让其他工具拒绝；read 仍能拿到记录；resume 重新激活并刷新 skills', async () => {
-    const created = await store.create({ base, skills: [skill('alpha')] });
+    const created = await store.create({ workspace, skills: [skill('alpha')] });
 
     const closed = await store.close(created.id);
     expect(closed.closedAt).toBe('2026-09-26T00:00:02.000Z');
@@ -110,8 +137,8 @@ describe('SessionStore 读取与生命周期', () => {
   });
 
   it('list 按 updatedAt 倒序，跳过损坏文件', async () => {
-    const first = await store.create({ base });
-    const second = await store.create({ base });
+    const first = await store.create({ workspace });
+    const second = await store.create({ workspace });
     await store.close(first.id);
 
     await writeFile(join(home, 'sessions', 'ses_0123456789ab.json'), 'not json', 'utf8');
@@ -124,7 +151,7 @@ describe('SessionStore 读取与生命周期', () => {
 
 describe('SessionStore.appendHistory', () => {
   it('追加审计条目（含 goal / reason / target / ok）并更新 updatedAt', async () => {
-    const created = await store.create({ base });
+    const created = await store.create({ workspace });
 
     const updated = await store.appendHistory(created.id, entry('确认结构'));
 
@@ -135,7 +162,7 @@ describe('SessionStore.appendHistory', () => {
 
   it('超过 historyLimit 时丢最旧的一条', async () => {
     const limited = new SessionStore({ home, historyLimit: 3, now: () => new Date((clock += 1000)) });
-    const created = await limited.create({ base });
+    const created = await limited.create({ workspace });
 
     for (const reason of ['r1', 'r2', 'r3', 'r4']) await limited.appendHistory(created.id, entry(reason));
 
@@ -143,7 +170,7 @@ describe('SessionStore.appendHistory', () => {
   });
 
   it('并发追加不丢失（同一 session 串行写）', async () => {
-    const created = await store.create({ base });
+    const created = await store.create({ workspace });
 
     await Promise.all(
       Array.from({ length: 10 }, (_, index) => store.appendHistory(created.id, entry(`并发 ${index}`))),

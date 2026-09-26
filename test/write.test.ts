@@ -15,25 +15,25 @@ let h: Harness;
 let sessionId: string;
 
 /**
- * base 外的测试目标统一放在工作区父目录，并带上工作区名：
+ * workspace 外的测试目标统一放在工作区父目录，并带上工作区名：
  * 父目录（系统 tmp）在测试之间是共享的，加前缀才能保证互不干扰、可重复运行。
  */
 const outsideName = (name: string) => `${basename(h.workspace)}-${name}`;
 const outsideFile = (name: string) => join(h.workspace, '..', outsideName(name));
 const outsideRelative = (name: string) => `../${outsideName(name)}`;
 
-/** 只调用一轮：base 内写入与门禁断言。 */
+/** 只调用一轮：workspace 内写入与门禁断言。 */
 const write = (args: Record<string, unknown>) =>
   h.callTool('write', { sessionId, goal: '写文件', reason: '落盘改动', ...args });
 
-/** 完整两轮：base 外写入自动确认后执行。 */
+/** 完整两轮：workspace 外写入自动确认后执行。 */
 const writeApproved = (args: Record<string, unknown>) =>
   h.callToolApproving('write', { sessionId, goal: '写文件', reason: '落盘改动', ...args });
 
 beforeEach(async () => {
   h = await createHarness();
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace, goal: '改代码', reason: '开始任务' }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '改代码', reason: '开始任务' }),
   );
   sessionId = created['sessionId'] as string;
 });
@@ -61,7 +61,7 @@ describe('write 工具', () => {
     expect(await readFile(join(h.workspace, 'existing.txt'), 'utf8')).toBe('新内容\n第二行\n');
   });
 
-  it('base 外写入确认后自动创建父目录', async () => {
+  it('workspace 外写入确认后自动创建父目录', async () => {
     const outside = outsideFile('outside/logs/a.txt');
 
     const result = expectOk(await writeApproved({ path: outside, content: 'x' }));
@@ -97,8 +97,8 @@ describe('write 工具', () => {
   });
 });
 
-describe('write base 边界门禁（MRTR）', () => {
-  it('base 内新建与覆盖都直接执行，不需要确认', async () => {
+describe('write workspace 边界门禁（MRTR）', () => {
+  it('workspace 内新建与覆盖都直接执行，不需要确认', async () => {
     const created = await write({ path: 'a/b/new.ts', content: 'x\n' });
     expect(created.resultType).not.toBe('input_required');
     expect(created.isError).toBe(false);
@@ -132,7 +132,7 @@ describe('write base 边界门禁（MRTR）', () => {
     await expect(access(outside)).rejects.toThrow();
   });
 
-  it('创建场景：父目录 symlink 指向 base 外时按真实路径判定', async () => {
+  it('创建场景：父目录 symlink 指向 workspace 外时按真实路径判定', async () => {
     const outsideDir = join(h.workspace, '..', outsideName('outside-dir'));
     await mkdir(outsideDir, { recursive: true });
     await symlink(outsideDir, join(h.workspace, 'escape-dir'));
@@ -146,7 +146,7 @@ describe('write base 边界门禁（MRTR）', () => {
     expect(await readFile(join(outsideDir, 'new.txt'), 'utf8')).toBe('x');
   });
 
-  it('覆盖 base 内指向 base 外文件的 symlink：按真实路径判定，且不把 symlink 换成普通文件', async () => {
+  it('覆盖 workspace 内指向 workspace 外文件的 symlink：按真实路径判定，且不把 symlink 换成普通文件', async () => {
     const outside = outsideFile('link-target.txt');
     await writeFile(outside, 'old', 'utf8');
     await symlink(outside, join(h.workspace, 'linked.txt'));
@@ -236,7 +236,7 @@ describe('write base 边界门禁（MRTR）', () => {
 
     // 去掉卡片装饰与换行后再比对，避免换行掩盖正文泄漏
     const flat = h.logs.join('\n').replace(/[│\s]+/g, '');
-    expect(flat).toContain('write.outside-base');
+    expect(flat).toContain('write.outside-workspace');
     expect(flat).toContain(`bytes${secret.length}`);
     expect(flat).not.toContain(secret);
   });

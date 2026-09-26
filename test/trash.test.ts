@@ -28,7 +28,7 @@ beforeEach(async () => {
     },
   });
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace }),
   );
   sessionId = created['sessionId'] as string;
 });
@@ -38,7 +38,7 @@ afterEach(async () => {
 });
 
 describe('trash 工具', () => {
-  it('base 内目标首次调用仍要求确认，确认前 backend 调用为 0', async () => {
+  it('workspace 内目标首次调用仍要求确认，确认前 backend 调用为 0', async () => {
     await writeFile(join(h.workspace, 'old.txt'), 'old\n', 'utf8');
 
     const outcome = await h.callTool('trash', {
@@ -79,7 +79,7 @@ describe('trash 工具', () => {
     expect(result).toMatchObject({ succeeded: 2, failed: 0 });
   });
 
-  it('base 外目标也无条件审批，确认前 backend 调用为 0', async () => {
+  it('workspace 外目标也无条件审批，确认前 backend 调用为 0', async () => {
     const outside = join(h.home, 'outside.txt');
     await writeFile(outside, 'outside\n', 'utf8');
     const args = { sessionId, paths: [outside] };

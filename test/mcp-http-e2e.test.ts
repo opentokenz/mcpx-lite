@@ -98,7 +98,7 @@ describe('mcp_tool downstream Streamable HTTP', () => {
       },
     });
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace }),
     );
     const sessionId = created['sessionId'] as string;
 
@@ -118,13 +118,17 @@ describe('mcp_tool downstream Streamable HTTP', () => {
     expect(remote.authorization()).toBe('Bearer HTTP_FIXTURE_SECRET');
     expect(JSON.stringify(inspected)).not.toContain('HTTP_FIXTURE_SECRET');
 
-    const called = await h.callTool('mcp_tool', {
+    const callArgs = {
       action: 'call',
       sessionId,
       server: 'remote',
       name: 'echo',
       arguments: { text: 'hello-http' },
-    });
+    };
+    const approval = expectApproval(await h.callTool('mcp_tool', callArgs));
+    const called = toOutcome(
+      await h.client.send(approvalRetryBody('mcp_tool', callArgs, approval.approvalToken)),
+    );
 
     expect(called.isError).toBe(false);
     expect(called.content).toContainEqual({ type: 'text', text: 'hello-http' });
@@ -139,7 +143,7 @@ describe('mcp_tool downstream Streamable HTTP', () => {
       },
     });
     const created = expectOk(
-      await h.callTool('session', { action: 'create', base: h.workspace }),
+      await h.callTool('session', { action: 'create', workspace: h.workspace }),
     );
     const sessionId = created['sessionId'] as string;
     const firstArgs = {

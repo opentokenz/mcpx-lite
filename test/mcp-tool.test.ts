@@ -34,7 +34,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 async function createSession(): Promise<string> {
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace }),
   );
   return created['sessionId'] as string;
 }
@@ -196,7 +196,7 @@ describe('mcp_tool catalog actions', () => {
   });
 
 
-  it('call readonly tool 直接执行并原样保留 content / structuredContent', async () => {
+  it('call readonly tool 首次审批后原样保留 content / structuredContent', async () => {
     await writeJson(join(h.home, '.agents', 'mcp.json'), {
       mcpServers: {
         fixture: { command: process.execPath, args: [fixture] },
@@ -204,7 +204,7 @@ describe('mcp_tool catalog actions', () => {
     });
     const sessionId = await createSession();
 
-    const outcome = await h.callTool('mcp_tool', {
+    const outcome = await h.callToolApproving('mcp_tool', {
       action: 'call',
       sessionId,
       server: 'fixture',
@@ -217,7 +217,7 @@ describe('mcp_tool catalog actions', () => {
     expect(outcome.structuredContent).toEqual({ echoed: 'hello-through-gateway' });
   });
 
-  it('call destructive tool 先审批且零副作用；goal/reason 变化后同 token 可执行', async () => {
+  it('call destructive tool 首次审批，批准后同 server 后续调用免审批', async () => {
     const marker = join(h.workspace, 'mutation.marker');
     await writeJson(join(h.home, '.agents', 'mcp.json'), {
       mcpServers: {
@@ -234,67 +234,34 @@ describe('mcp_tool catalog actions', () => {
       sessionId,
       server: 'fixture',
       name: 'mutate',
-      arguments: { value: 'approved-value' },
-      goal: '首轮 tool 目标',
-      reason: '首轮 tool 原因',
+      arguments: { value: 'direct-value' },
     };
 
     const token = expectApproval(await h.callTool('mcp_tool', firstArgs)).approvalToken;
     await expect(access(marker)).rejects.toThrow();
 
-    const retryArgs = {
+    const result = toOutcome(
+      await h.client.send(approvalRetryBody('mcp_tool', firstArgs, token)),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.resultType).not.toBe('approval_required');
+    expect(await readFile(marker, 'utf8')).toBe('direct-value');
+    expect(result.content).toContainEqual({ type: 'text', text: 'mutated:direct-value' });
+
+    const trusted = await h.callTool('mcp_tool', {
       action: 'call',
       sessionId,
       server: 'fixture',
-      name: 'mutate',
-      arguments: { value: 'approved-value' },
-      goal: '二次目标不同',
-      reason: '二次原因不同',
-    };
-    const retry = toOutcome(
-      await h.client.send(approvalRetryBody('mcp_tool', retryArgs, token)),
-    );
-
-    expect(retry.isError).toBe(false);
-    expect(await readFile(marker, 'utf8')).toBe('approved-value');
-    expect(retry.content).toContainEqual({ type: 'text', text: 'mutated:approved-value' });
-  });
-
-  it('destructive tool 审批 token 不授权修改后的 arguments', async () => {
-    const marker = join(h.workspace, 'tampered-mutation.marker');
-    await writeJson(join(h.home, '.agents', 'mcp.json'), {
-      mcpServers: {
-        fixture: {
-          command: process.execPath,
-          args: [fixture],
-          env: { FIXTURE_MUTATION_MARKER: marker },
-        },
-      },
+      name: 'unannotated',
+      arguments: { value: 'trusted' },
     });
-    const sessionId = await createSession();
-    const firstArgs = {
-      action: 'call',
-      sessionId,
-      server: 'fixture',
-      name: 'mutate',
-      arguments: { value: 'first' },
-    };
-    const token = expectApproval(await h.callTool('mcp_tool', firstArgs)).approvalToken;
-
-    const changed = {
-      ...firstArgs,
-      arguments: { value: 'changed' },
-    };
-    const retry = toOutcome(
-      await h.client.send(approvalRetryBody('mcp_tool', changed, token)),
-    );
-
-    expect(retry.isError).toBe(true);
-    expect(retry.text).toMatch(/不匹配/);
-    await expect(access(marker)).rejects.toThrow();
+    expect(trusted.isError).toBe(false);
+    expect(trusted.resultType).not.toBe('approval_required');
+    expect(trusted.content).toContainEqual({ type: 'text', text: 'unannotated:trusted' });
   });
 
-  it('没有 annotations 的 downstream tool 默认要求审批', async () => {
+  it('call unannotated tool 首次仍要求审批，批准后执行', async () => {
     await writeJson(join(h.home, '.agents', 'mcp.json'), {
       mcpServers: {
         fixture: { command: process.execPath, args: [fixture] },
@@ -302,16 +269,20 @@ describe('mcp_tool catalog actions', () => {
     });
     const sessionId = await createSession();
 
-    const outcome = await h.callTool('mcp_tool', {
+    const args = {
       action: 'call',
       sessionId,
       server: 'fixture',
       name: 'unannotated',
       arguments: { value: 'x' },
-    });
+    };
 
-    const approval = expectApproval(outcome);
-    expect(approval.approval.riskLabel).toMatch(/mcp\.tool/);
+    const token = expectApproval(await h.callTool('mcp_tool', args)).approvalToken;
+    const outcome = toOutcome(await h.client.send(approvalRetryBody('mcp_tool', args, token)));
+
+    expect(outcome.isError).toBe(false);
+    expect(outcome.resultType).not.toBe('approval_required');
+    expect(outcome.content).toContainEqual({ type: 'text', text: 'unannotated:x' });
   });
 
 
@@ -331,12 +302,15 @@ describe('mcp_tool catalog actions', () => {
     };
 
     const firstBody = await h.client.send(toolCallBody('mcp_tool', baseArgs));
-    expect(firstBody['error']).toBeUndefined();
-    const first = firstBody['result'] as Record<string, unknown>;
+    const approval = expectApproval(toOutcome(firstBody));
+    const approvedBody = await h.client.send(
+      approvalRetryBody('mcp_tool', baseArgs, approval.approvalToken),
+    );
+    const approved = approvedBody['result'] as Record<string, unknown>;
 
-    expect(first['resultType']).toBe('input_required');
-    expect(first['requestState']).toBe('opaque:α/二\nline');
-    expect(first['inputRequests']).toHaveProperty('answer');
+    expect(approved['resultType']).toBe('input_required');
+    expect(approved['requestState']).toBe('opaque:α/二\nline');
+    expect(approved['inputRequests']).toHaveProperty('answer');
 
     const responses = {
       answer: {
@@ -349,7 +323,7 @@ describe('mcp_tool catalog actions', () => {
         mrtrRetryBody(
           'mcp_tool',
           baseArgs,
-          first['requestState'] as string,
+          approved['requestState'] as string,
           responses,
         ),
       ),
@@ -477,6 +451,46 @@ describe('mcp_tool catalog actions', () => {
       state: 'prompt-state:α/二\nline',
       responses,
     });
+  });
+
+  it('call project server 首次连接审批同时授权首次调用，不重复审批', async () => {
+    await writeJson(join(h.workspace, '.mcp.json'), {
+      mcpServers: {
+        fixture: { command: process.execPath, args: [fixture] },
+      },
+    });
+    const sessionId = await createSession();
+    const args = {
+      action: 'call',
+      sessionId,
+      server: 'fixture',
+      name: 'echo',
+      arguments: { text: 'project-first-call' },
+    };
+
+    const approval = expectApproval(await h.callTool('mcp_tool', args));
+    expect(approval.approval.riskLabel).toMatch(/mcp\.tool/);
+    expect(approval.approval.message).toContain('echo');
+
+    const tampered = {
+      ...args,
+      name: 'unannotated',
+      arguments: { value: 'tampered' },
+    };
+    const rejected = toOutcome(
+      await h.client.send(approvalRetryBody('mcp_tool', tampered, approval.approvalToken)),
+    );
+    expect(rejected.isError).toBe(true);
+    expect(rejected.text).toMatch(/不匹配/);
+
+    const retryApproval = expectApproval(await h.callTool('mcp_tool', args));
+    const result = toOutcome(
+      await h.client.send(approvalRetryBody('mcp_tool', args, retryApproval.approvalToken)),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.resultType).not.toBe('approval_required');
+    expect(result.structuredContent).toEqual({ echoed: 'project-first-call' });
   });
 
   it('inspect project server 审批前不 spawn，批准后才连接；goal/reason 可变化', async () => {

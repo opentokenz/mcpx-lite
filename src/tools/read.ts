@@ -11,7 +11,7 @@ const SNIFF_BYTES = 8192;
 
 export const readSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
-  path: z.string().min(1).describe('相对路径基于 session.base 解析；绝对路径直接使用；允许 ..'),
+  path: z.string().min(1).describe('相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..'),
   offset: z.number().int().min(0).default(0).describe('起始行号（0 基），默认 0'),
   limit: z.number().int().min(1).max(2000).default(200).describe('最多返回行数，默认 200'),
 });
@@ -23,12 +23,12 @@ export const READ_DESCRIPTION = `读取文本文件内容（按行分页）。
 
 参数：
 - sessionId：必填
-- path：相对路径基于 session.base 解析；绝对路径直接使用；允许 .. 离开 base
+- path：相对路径基于 session.workspace 解析；绝对路径直接使用；允许 .. 离开 workspace
 - offset：起始行号（0 基），默认 0
 - limit：最多返回行数，默认 200（配合 offset 翻页；返回里带 hasMore / totalLines）
 - goal / reason：可选审计字段；提供时写入 session history
 
-行为：只读工具，不受 base 边界限制：base 外也能直接读，不需要用户确认。
+行为：只读工具，不受 workspace 边界限制：workspace 外也能直接读，不需要用户确认。
 最多返回 100_000 字符，超出时截断并置 truncated=true。
 
 示例：
@@ -46,7 +46,7 @@ export const readTool = defineTool({
   handler: async (args, _ctx, session) => {
     if (!session) throw new ToolError('read 需要有效 sessionId');
 
-    const absolute = resolvePath(session.base, args.path);
+    const absolute = resolvePath(session.workspace, args.path);
 
     let info;
     try {
@@ -56,7 +56,7 @@ export const readTool = defineTool({
     }
     if (!info.isFile()) throw new ToolError(`not a regular file: ${absolute}`);
 
-    const base = {
+    const workspace = {
       path: absolute,
       offset: args.offset,
       limit: args.limit,
@@ -67,7 +67,7 @@ export const readTool = defineTool({
       content: '',
     };
 
-    if (info.size === 0) return base;
+    if (info.size === 0) return workspace;
 
     await assertTextFile(absolute, info.size);
 
@@ -104,7 +104,7 @@ export const readTool = defineTool({
     }
 
     return {
-      ...base,
+      ...workspace,
       returnedLines: lines.length,
       totalLines,
       hasMore: args.offset + lines.length < totalLines,

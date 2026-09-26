@@ -9,13 +9,13 @@ const SKILLS_ACTIONS = ['list', 'get', 'reload'] as const;
 
 export const skillsSchema = withGoalReason({
   action: z.enum(SKILLS_ACTIONS).describe('list 列出元数据 / get 读取正文 / reload 重新扫描'),
-  sessionId: z.string().min(1).describe('session create 返回的会话 id；决定扫描项目 skill 的 base 目录'),
+  sessionId: z.string().min(1).describe('session create 返回的会话 id；决定扫描项目 skill 的 workspace 目录'),
   name: z.string().min(1).optional().describe('get 必填：skill 名字（list 返回的 name）'),
 });
 
 export const SKILLS_DESCRIPTION = `本机 skill（Agent 指令集）：list / get / reload。
 
-skill 来自两个目录：<base>/.agents/skills/<name>/SKILL.md 与 ~/.agents/skills/<name>/SKILL.md；
+skill 来自两个目录：<workspace>/.agents/skills/<name>/SKILL.md 与 ~/.agents/skills/<name>/SKILL.md；
 project 目录的同名 skill 覆盖 global。创建 Session 时只读取元数据，正文永远不自动加载。
 
 用途：
@@ -56,10 +56,10 @@ export function createSkillsTool(deps: {
 
       switch (args.action) {
         case 'list':
-          return { skills: metadata(await skills.scan(session.base)) };
+          return { skills: metadata(await skills.scan(session.workspace)) };
 
         case 'reload': {
-          const found = await skills.scan(session.base);
+          const found = await skills.scan(session.workspace);
           logger.event('skills-reload', { session: session.id, skills: found.length });
           return { skills: metadata(found) };
         }
@@ -67,7 +67,7 @@ export function createSkillsTool(deps: {
         case 'get': {
           if (!args.name) throw new ToolError('skills get 需要 name');
 
-          const found = await skills.get(session.base, args.name);
+          const found = await skills.get(session.workspace, args.name);
           if (!found) throw new ToolError(`unknown skill: ${args.name}`);
 
           logger.event('skills-get', { session: session.id, skill: found.meta.name, source: found.meta.source, path: found.meta.path });

@@ -18,7 +18,7 @@ export const TRASH_DESCRIPTION = `将文件或目录移动到系统回收站。
 用途：可恢复地移除文件/目录，替代常见 rm 场景。所有调用都必须经过用户确认。
 参数：
 - sessionId：必填
-- paths：1-100 个路径；相对路径基于 session.base 解析
+- paths：1-100 个路径；相对路径基于 session.workspace 解析
 - goal / reason：可选审计字段；提供时写入 session history
 
 示例：
@@ -39,13 +39,13 @@ export function createTrashTool(approvals: ApprovalCodec, backend: TrashBackend)
     requiresSession: true,
     describeCall: (args, session) => ({
       target: `${args.paths.length} paths`,
-      files: session ? args.paths.map((path) => resolvePath(session.base, path)) : args.paths,
+      files: session ? args.paths.map((path) => resolvePath(session.workspace, path)) : args.paths,
       fields: { paths: args.paths },
     }),
     handler: async (args, _ctx, session, observe) => {
       if (!session) throw new ToolError('trash 需要有效 sessionId');
 
-      const paths = args.paths.map((path) => resolvePath(session.base, path));
+      const paths = args.paths.map((path) => resolvePath(session.workspace, path));
       if (new Set(paths).size !== paths.length) {
         throw new ToolError('trash preflight failed: duplicate path');
       }

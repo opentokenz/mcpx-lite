@@ -250,12 +250,12 @@ export function isApprovalRequiredResult(value: unknown): value is ApprovalRequi
 }
 
 /**
- * base 是文件类工具（write / edit / export）的信任边界：目标真实路径落在 base 之外
+ * workspace 是文件类工具（write / edit / export）的信任边界：目标真实路径落在 workspace 之外
  * 一律 dangerous，必须用户通过审核卡片确认后才能操作。
  *
  * `target === null` 表示真实路径无法解析（symlink 环 / 权限等），同样 fail closed。
  */
-export async function enforceBaseBoundary(opts: {
+export async function enforceWorkspaceBoundary(opts: {
   codec: ApprovalCodec;
   sessionId: string;
   tool: string;
@@ -268,7 +268,7 @@ export async function enforceBaseBoundary(opts: {
   path: string;
   /** 解析出的真实目标；null = 无法解析 */
   target: string | null;
-  base: string;
+  workspace: string;
   fields?: Record<string, unknown>;
   observer?: ToolObserver;
 }): Promise<ApprovalRequiredResult | null> {
@@ -287,14 +287,14 @@ export async function enforceBaseBoundary(opts: {
       risk: 'dangerous',
       riskLabel: unresolved
         ? `${opts.tool}.unresolved · 无法解析目标真实路径，按 fail closed 要求确认`
-        : `${opts.tool}.outside-base · 目标文件的真实路径位于 session.base 之外`,
+        : `${opts.tool}.outside-workspace · 目标文件的真实路径位于 session.workspace 之外`,
       summary: shown,
       message: [
-        `这个${opts.action}目标的真实路径在 session.base 之外（base 是文件类工具的信任边界）：`,
+        `这个${opts.action}目标的真实路径在 session.workspace 之外（workspace 是文件类工具的信任边界）：`,
         '',
         `请求路径：${opts.path}`,
         `真实目标：${shown}`,
-        `base：${opts.base}`,
+        `workspace：${opts.workspace}`,
         ...(unresolved ? ['', '目标真实路径无法解析（可能是 symlink 环或权限问题），按 fail closed 处理。'] : []),
       ].join('\n'),
       fields: { path: opts.path, ...(opts.target ? { target: opts.target } : {}), ...(opts.fields ?? {}) },

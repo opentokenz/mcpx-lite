@@ -6,14 +6,14 @@ import { createHarness, expectError, expectOk, type Harness } from './harness.js
 let h: Harness;
 let sessionId: string;
 
-/** base 外的测试目标：带上工作区名，避免多个测试共享同一个系统 tmp 目录时互相干扰。 */
+/** workspace 外的测试目标：带上工作区名，避免多个测试共享同一个系统 tmp 目录时互相干扰。 */
 const outsideDir = () => `${basename(h.workspace)}-shared`;
 const outsideFile = (name: string) => join(h.workspace, '..', outsideDir(), name);
 
 async function start(): Promise<void> {
   h = await createHarness();
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace, goal: '改代码', reason: '开始任务' }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '改代码', reason: '开始任务' }),
   );
   sessionId = created['sessionId'] as string;
 }
@@ -62,7 +62,7 @@ describe('read 工具', () => {
     expect(result).toMatchObject({ returnedLines: 0, totalLines: 0, hasMore: false, truncated: false, content: '' });
   });
 
-  it('相对路径基于 session.base 解析；base 外也能直接读，不需要确认', async () => {
+  it('相对路径基于 session.workspace 解析；workspace 外也能直接读，不需要确认', async () => {
     await mkdir(join(h.workspace, 'src'), { recursive: true });
     await writeFile(join(h.workspace, 'src', 'index.ts'), 'export const a = 1;\n', 'utf8');
     await mkdir(join(h.workspace, '..', outsideDir()), { recursive: true });
@@ -72,7 +72,7 @@ describe('read 工具', () => {
     expect(relative['path']).toBe(join(h.workspace, 'src', 'index.ts'));
     expect(relative['content']).toBe('export const a = 1;');
 
-    // base 外：相对路径（..）与绝对路径都直接读
+    // workspace 外：相对路径（..）与绝对路径都直接读
     const traversal = await read({ path: `../${outsideDir()}/config.json` });
     expect(traversal.resultType).not.toBe('input_required');
     expect(expectOk(traversal)['content']).toBe('{}');
@@ -135,7 +135,7 @@ describe('read 工具', () => {
     expect(JSON.stringify(history)).not.toContain('# hi');
   });
 
-  it('base 外读取不进入确认流程，也不产生安全事件', async () => {
+  it('workspace 外读取不进入确认流程，也不产生安全事件', async () => {
     await mkdir(join(h.workspace, '..', outsideDir()), { recursive: true });
     const outside = outsideFile('secret.txt');
     await writeFile(outside, 'TOPSECRET-READ-BODY\n', 'utf8');
@@ -147,6 +147,6 @@ describe('read 工具', () => {
 
     const logs = h.logs.join('\n');
     expect(logs).not.toContain('APPROVAL');
-    expect(logs).not.toContain('read.outside-base');
+    expect(logs).not.toContain('read.outside-workspace');
   });
 });

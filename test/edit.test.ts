@@ -14,11 +14,11 @@ import {
 let h: Harness;
 let sessionId: string;
 
-/** 只调用一轮：base 内编辑与门禁断言。 */
+/** 只调用一轮：workspace 内编辑与门禁断言。 */
 const edit = (args: Record<string, unknown>) =>
   h.callTool('edit', { sessionId, goal: '改代码', reason: '精确替换', ...args });
 
-/** 完整两轮：base 外编辑自动确认后执行。 */
+/** 完整两轮：workspace 外编辑自动确认后执行。 */
 const editApproved = (args: Record<string, unknown>) =>
   h.callToolApproving('edit', { sessionId, goal: '改代码', reason: '精确替换', ...args });
 
@@ -29,7 +29,7 @@ const single = (path: string, oldText: string, newText: string) => ({
 beforeEach(async () => {
   h = await createHarness();
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace, goal: '改代码', reason: '开始任务' }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '改代码', reason: '开始任务' }),
   );
   sessionId = created['sessionId'] as string;
 });
@@ -176,8 +176,8 @@ describe('edit 工具', () => {
   });
 });
 
-describe('edit base 边界门禁（MRTR）', () => {
-  it('base 内普通文件不需要确认', async () => {
+describe('edit workspace 边界门禁（MRTR）', () => {
+  it('workspace 内普通文件不需要确认', async () => {
     await writeFile(join(h.workspace, 'inside.ts'), 'old\n', 'utf8');
 
     const outcome = await edit(single('inside.ts', 'old', 'new'));
@@ -187,7 +187,7 @@ describe('edit base 边界门禁（MRTR）', () => {
     expect(await readFile(join(h.workspace, 'inside.ts'), 'utf8')).toBe('new\n');
   });
 
-  it('base 内 symlink 指向 base 内文件时也不需要确认', async () => {
+  it('workspace 内 symlink 指向 workspace 内文件时也不需要确认', async () => {
     await writeFile(join(h.workspace, 'real.ts'), 'old\n', 'utf8');
     await symlink(join(h.workspace, 'real.ts'), join(h.workspace, 'alias.ts'));
 
@@ -210,7 +210,7 @@ describe('edit base 边界门禁（MRTR）', () => {
     expect(await readFile(outside, 'utf8')).toBe('new\n');
   });
 
-  it('绝对路径指向 base 外时不修改文件并返回审核卡片', async () => {
+  it('绝对路径指向 workspace 外时不修改文件并返回审核卡片', async () => {
     const outside = join(h.workspace, '..', 'outside-absolute.txt');
     await writeFile(outside, 'old value\n', 'utf8');
 
@@ -223,7 +223,7 @@ describe('edit base 边界门禁（MRTR）', () => {
     expect(await readFile(outside, 'utf8')).toBe('new value\n');
   });
 
-  it('base 内 symlink 指向 base 外时按真实路径判定，确认后写入真实目标而不替换 symlink', async () => {
+  it('workspace 内 symlink 指向 workspace 外时按真实路径判定，确认后写入真实目标而不替换 symlink', async () => {
     const outside = join(h.workspace, '..', 'outside-symlink-target.txt');
     await writeFile(outside, 'old\n', 'utf8');
     await symlink(outside, join(h.workspace, 'escape.ts'));
@@ -282,7 +282,7 @@ describe('edit base 边界门禁（MRTR）', () => {
     expect(await readFile(outside, 'utf8')).toBe('new\n');
   });
 
-  it('确认中的 base 外编辑不写 history，确认执行后才记录', async () => {
+  it('确认中的 workspace 外编辑不写 history，确认执行后才记录', async () => {
     const outside = join(h.workspace, '..', 'outside-history.txt');
     await writeFile(outside, 'old\n', 'utf8');
 

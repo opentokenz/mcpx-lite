@@ -27,7 +27,7 @@ const shellApproved = (args: Record<string, unknown>) =>
 beforeEach(async () => {
   h = await createHarness();
   const created = expectOk(
-    await h.callTool('session', { action: 'create', base: h.workspace, goal: '改代码', reason: '开始任务' }),
+    await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '改代码', reason: '开始任务' }),
   );
   sessionId = created['sessionId'] as string;
 });
@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 describe('shell 工具', () => {
-  it('默认 cwd 是 session.base，返回 stdout / exitCode / cwd', async () => {
+  it('默认 cwd 是 session.workspace，返回 stdout / exitCode / cwd', async () => {
     const result = expectOk(await shell({ command: 'pwd' }));
 
     expect(result['stdout']).toBe(`${h.workspace}\n`);
@@ -71,7 +71,7 @@ describe('shell 工具', () => {
     expect(result['exitCode']).toBe(3);
   });
 
-  it('可以离开 base：cd .. 与绝对路径都允许', async () => {
+  it('可以离开 workspace：cd .. 与绝对路径都允许', async () => {
     const up = expectOk(await shell({ command: 'cd .. && pwd' }));
     expect(up['stdout']).toBe(`${join(h.workspace, '..')}\n`);
 

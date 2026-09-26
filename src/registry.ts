@@ -67,7 +67,7 @@ let callSequence = 0;
 export function describePath(session: SessionFile | undefined, path: string): ToolCallInfo {
   const fields = { path };
   try {
-    const absolute = session ? resolvePath(session.base, path) : path;
+    const absolute = session ? resolvePath(session.workspace, path) : path;
     return absolute ? { target: absolute, files: [absolute], fields } : { target: '', fields };
   } catch {
     return { target: String(path ?? ''), fields };
@@ -129,6 +129,7 @@ async function executeTool(opts: {
   const startedAt = Date.now();
 
   let info: ToolCallInfo = { target: '' };
+  let sessionWorkspace: string | undefined;
   const fields = (): Record<string, unknown> => ({
     ...auditFields(args),
     ...(info.fields ?? {}),
@@ -143,6 +144,8 @@ async function executeTool(opts: {
         phase: event.phase,
         riskLevel: event.risk,
         riskLabel: event.riskLabel,
+        target: info.target,
+        workspace: sessionWorkspace,
         ...(event.note ? { note: event.note } : {}),
         ...(event.phase === 'required'
           ? { fields: { ...fields(), ...(event.fields ?? {}), risk: event.riskLabel } }
@@ -153,9 +156,10 @@ async function executeTool(opts: {
 
   try {
     const session = tool.requiresSession ? await sessions.load(String(args['sessionId'] ?? '')) : undefined;
+    sessionWorkspace = session?.workspace;
     info = tool.describeCall?.(args, session) ?? { target: '' };
 
-    logger.tool({ id, tool: tool.name, phase: 'call', target: info.target });
+    logger.tool({ id, tool: tool.name, phase: 'call', target: info.target, workspace: sessionWorkspace, fields: fields() });
 
     const result = await tool.handler(args, ctx, session, observer);
 
@@ -169,6 +173,8 @@ async function executeTool(opts: {
       tool: tool.name,
       phase: 'done',
       ms: Date.now() - startedAt,
+      target: info.target,
+      workspace: sessionWorkspace,
       fields: { ...fields(), ...resultFields(result) },
     });
     await recordHistory({
@@ -190,6 +196,8 @@ async function executeTool(opts: {
       phase: 'fail',
       ms: Date.now() - startedAt,
       error: message,
+      target: info.target,
+      workspace: sessionWorkspace,
       fields: fields(),
     });
     if (!(error instanceof ToolError)) {
@@ -285,36 +293,55 @@ function auditFields(args: Record<string, unknown>): Record<string, unknown> {
   return fields;
 }
 
-/** 结果字段：内容与长字符串只记长度，避免把文件正文 / 命令输出 / 提示词刷进终端。 */
 function resultFields(result: unknown): Record<string, unknown> {
-  return { result: summarize(result) };
+  return summarizeResult(result);
 }
 
-const RESULT_STRING_LIMIT = 120;
-/** 这些字段会承载文件正文 / 命令输出，卡片上一律只记长度。 */
-const RESULT_REDACTED_KEYS = new Set(['content', 'stdout', 'stderr', 'blob']);
-
-function summarize(result: unknown): unknown {
+function summarizeResult(result: unknown): Record<string, unknown> {
   if (isCallToolResult(result)) {
-    // 只记块数与类型：块内容（含 export 内联的 base64 blob / 文件正文）永不进日志
-    return {
-      blocks: result.content.length,
-      types: result.content.map((block) => (block as { type?: string }).type ?? 'unknown'),
-    };
+    const types = result.content.map((block) => (block as { type?: string }).type ?? 'unknown');
+    const count = result.content.length;
+    return { result: `${count} block${count === 1 ? '' : 's'} · ${types.join(', ')}` };
   }
 
   if (typeof result === 'object' && result !== null) {
-    return Object.fromEntries(
-      Object.entries(result as Record<string, unknown>).map(([key, value]) => {
-        if (typeof value === 'string' && (RESULT_REDACTED_KEYS.has(key) || value.length > RESULT_STRING_LIMIT)) {
-          return [key, `<${value.length} chars>`];
-        }
-        return [key, value];
-      }),
-    );
+    const value = result as Record<string, unknown>;
+    const stdout = typeof value['stdout'] === 'string' ? value['stdout'] : undefined;
+    const stderr = typeof value['stderr'] === 'string' ? value['stderr'] : undefined;
+
+    if (stdout !== undefined || stderr !== undefined || typeof value['exitCode'] === 'number') {
+      const parts: string[] = [];
+      if (typeof value['exitCode'] === 'number') parts.push(`exit ${value['exitCode']}`);
+      if (value['timedOut'] === true) parts.push('timed out');
+      parts.push(`stderr ${stderr?.length ?? 0} chars`);
+      if (value['stdoutTruncated'] === true) parts.push('stdout truncated');
+      if (value['stderrTruncated'] === true) parts.push('stderr truncated');
+      return {
+        result: parts.join(' · '),
+        ...(stdout ? { stdout } : {}),
+        ...(stderr ? { stderr } : {}),
+      };
+    }
+
+    if (typeof value['files'] === 'number' && typeof value['replacements'] === 'number') {
+      return { result: `files ${value['files']} · replacements ${value['replacements']}` };
+    }
+    if (typeof value['succeeded'] === 'number' && typeof value['failed'] === 'number') {
+      return { result: `${value['succeeded']} succeeded · ${value['failed']} failed` };
+    }
+    if (Array.isArray(value['skills'])) return { result: `${value['skills'].length} skills` };
+    if (Array.isArray(value['servers'])) return { result: `${value['servers'].length} servers` };
+    if (typeof value['returnedLines'] === 'number') {
+      const total = typeof value['totalLines'] === 'number' ? `/${value['totalLines']}` : '';
+      return { result: `${value['returnedLines']}${total} lines` };
+    }
+    if (typeof value['bytes'] === 'number') return { result: `${value['bytes']} bytes` };
+
+    const json = JSON.stringify(value);
+    return { result: json.length > 160 ? `${json.slice(0, 160)}…` : json };
   }
 
-  return result;
+  return { result: String(result) };
 }
 
 function errorMessage(error: unknown): string {

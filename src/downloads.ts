@@ -44,8 +44,8 @@ export async function inspectExportable(path: string): Promise<Stats> {
 }
 
 /**
- * download 工具的下载凭据：随机不透明 token → 恰好一个具体文件，带 TTL。
- * 签发前的 base 边界确认由 export 工具负责（见 enforceBaseBoundary），token 本身只对这一个文件有效。
+ * export 工具的下载凭据：随机不透明 token → 恰好一个具体文件，带 TTL。
+ * 签发前的 workspace 边界确认由 export 工具负责（见 enforceWorkspaceBoundary），token 本身只对这一个文件有效。
  */
 export class TokenStore {
   private readonly records = new Map<string, DownloadRecord>();
