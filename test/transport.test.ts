@@ -1,0 +1,291 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createHarness, expectError, expectOk, skillFile, type Harness } from './harness.js';
+import type { SessionFile } from '../src/session.js';
+
+let h: Harness;
+
+async function writeSkill(dir: string, name: string, content: string): Promise<void> {
+  await mkdir(join(dir, name), { recursive: true });
+  await writeFile(join(dir, name, 'SKILL.md'), content, 'utf8');
+}
+
+async function createSession(harness: Harness = h): Promise<Record<string, unknown>> {
+  return expectOk(
+    await harness.callTool('session', {
+      action: 'create',
+      base: harness.workspace,
+      goal: '开始处理项目',
+      reason: '需要绑定项目锚点',
+    }),
+  );
+}
+
+beforeEach(async () => {
+  h = await createHarness();
+});
+
+afterEach(async () => {
+  await h.cleanup();
+});
+
+describe('tools/list', () => {
+  it('session 与 skills 都已注册，且描述里带使用说明与示例', async () => {
+    const tools = await h.listTools();
+    const names = tools.map((tool) => tool.name);
+
+    expect(names).toContain('session');
+    expect(names).toContain('skills');
+
+    for (const tool of tools) {
+      expect(tool.description).toMatch(/示例/);
+      expect(tool.description).toContain('"goal"');
+      expect(tool.description).toContain('"reason"');
+      expect(tool.inputSchema['type']).toBe('object');
+    }
+  });
+
+  it('工具的 inputSchema 暴露必填 goal / reason', async () => {
+    const session = (await h.listTools()).find((tool) => tool.name === 'session');
+
+    expect(session?.inputSchema['required']).toEqual(expect.arrayContaining(['goal', 'reason', 'action']));
+  });
+});
+
+describe('session 工具', () => {
+  it('create 返回 sessionId / base / skills metadata / instructions，且不含 skill 正文', async () => {
+    await writeSkill(h.globalSkillsDir, 'alpha', skillFile('# Alpha 正文\n', 'name: alpha\ndescription: 全局 alpha'));
+
+    const created = await createSession();
+    const skills = created['skills'] as { name: string; description: string; source: string }[];
+
+    expect(created['sessionId']).toMatch(/^ses_[0-9a-f]{12}$/);
+    expect(created['base']).toBe(h.workspace);
+    expect(skills).toEqual([{ name: 'alpha', description: '全局 alpha', source: 'global' }]);
+    expect(JSON.stringify(created)).not.toContain('# Alpha 正文');
+
+    const instructions = created['instructions'] as string;
+    expect(instructions).toContain('不是沙箱');
+    expect(instructions).toContain('base');
+    expect(instructions).toMatch(/用户/);
+
+    const stored = JSON.parse(
+      await (await import('node:fs/promises')).readFile(
+        join(h.home, 'sessions', `${created['sessionId'] as string}.json`),
+        'utf8',
+      ),
+    ) as SessionFile;
+    expect(stored.base).toBe(h.workspace);
+    expect(stored.skills[0]?.path).toBe(join(h.globalSkillsDir, 'alpha', 'SKILL.md'));
+    expect(stored.history).toEqual([]);
+  });
+
+  it('create 缺少 base 或不存在的 base 都是可读错误', async () => {
+    expect(expectError(await h.callTool('session', { action: 'create', goal: 'g', reason: 'r' }))).toContain('base');
+
+    expect(
+      expectError(
+        await h.callTool('session', {
+          action: 'create',
+          base: join(h.workspace, 'missing'),
+          goal: 'g',
+          reason: 'r',
+        }),
+      ),
+    ).toContain('base does not exist');
+  });
+
+  it('get / list / close 行为正确，close 后其他工具拒绝执行', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    const got = expectOk(await h.callTool('session', { action: 'get', sessionId, goal: 'g', reason: 'r' }));
+    expect(got['id']).toBe(sessionId);
+    expect(got['closedAt']).toBeNull();
+
+    const listed = expectOk(await h.callTool('session', { action: 'list', goal: 'g', reason: 'r' }));
+    expect((listed['sessions'] as Record<string, unknown>[])[0]).toMatchObject({
+      sessionId,
+      base: h.workspace,
+      skillCount: 0,
+      historyCount: 0,
+      closedAt: null,
+    });
+
+    const closed = expectOk(await h.callTool('session', { action: 'close', sessionId, goal: 'g', reason: 'r' }));
+    expect(closed['closedAt']).toBeTypeOf('string');
+    expect(expectError(await h.callTool('skills', { action: 'list', sessionId, goal: 'g', reason: 'r' }))).toMatch(
+      /closed/,
+    );
+  });
+
+  it('重启后 resume 恢复 base 与 skill index', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+    await writeSkill(join(h.workspace, '.agents', 'skills'), 'beta', skillFile('# Beta\n', 'name: beta\ndescription: 项目 beta'));
+
+    const restarted = await h.restart();
+    const resumed = expectOk(
+      await restarted.callTool('session', {
+        action: 'resume',
+        sessionId,
+        goal: '继续上次工作',
+        reason: '服务重启',
+      }),
+    );
+
+    expect(resumed['base']).toBe(h.workspace);
+    expect(resumed['skills']).toEqual([{ name: 'beta', description: '项目 beta', source: 'project' }]);
+    expect(resumed['instructions']).toContain('不是沙箱');
+  });
+
+  it('未知 sessionId 被拒绝，不静默新建会话', async () => {
+    expect(expectError(await h.callTool('session', { action: 'get', sessionId: 'ses_000000000000', goal: 'g', reason: 'r' })))
+      .toMatch(/unknown session/);
+    expect(expectError(await h.callTool('skills', { action: 'list', sessionId: 'ses_000000000000', goal: 'g', reason: 'r' })))
+      .toMatch(/unknown session/);
+  });
+
+  it('action 与参数不匹配时报错', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    expect(expectError(await h.callTool('session', { action: 'resume', goal: 'g', reason: 'r' }))).toContain('sessionId');
+    expect(expectError(await h.callTool('session', { action: 'create', base: h.workspace, sessionId, goal: 'g', reason: 'r' })))
+      .toContain('sessionId');
+    expect(expectError(await h.callTool('session', { action: 'unknown', goal: 'g', reason: 'r' }))).toBeTruthy();
+  });
+});
+
+describe('skills 工具', () => {
+  it('list 只返回 metadata，get 按需返回正文，reload 发现新增 skill', async () => {
+    await writeSkill(h.globalSkillsDir, 'alpha', skillFile('# Alpha 正文\n', 'name: alpha\ndescription: 全局 alpha'));
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    const listed = expectOk(await h.callTool('skills', { action: 'list', sessionId, goal: 'g', reason: '看看有什么 skill' }));
+    expect(listed['skills']).toEqual([{ name: 'alpha', description: '全局 alpha', source: 'global' }]);
+
+    const got = expectOk(
+      await h.callTool('skills', { action: 'get', sessionId, name: 'alpha', goal: 'g', reason: '需要 alpha 指引' }),
+    );
+    expect(got['content']).toBe('# Alpha 正文\n');
+    expect(got['source']).toBe('global');
+    expect(got['path']).toBe(join(h.globalSkillsDir, 'alpha', 'SKILL.md'));
+
+    await writeSkill(h.globalSkillsDir, 'gamma', skillFile('# Gamma\n', 'name: gamma\ndescription: 新增 gamma'));
+    const reloaded = expectOk(await h.callTool('skills', { action: 'reload', sessionId, goal: 'g', reason: '刷新索引' }));
+    expect((reloaded['skills'] as { name: string }[]).map((skill) => skill.name)).toEqual(['alpha', 'gamma']);
+  });
+
+  it('get 缺 name 或名字不存在时报错', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    expect(expectError(await h.callTool('skills', { action: 'get', sessionId, goal: 'g', reason: 'r' }))).toContain('name');
+    expect(
+      expectError(await h.callTool('skills', { action: 'get', sessionId, name: 'nope', goal: 'g', reason: 'r' })),
+    ).toMatch(/unknown skill/);
+  });
+});
+
+describe('schema 与隔离', () => {
+  it('缺 sessionId / goal / reason 被 inputSchema 拒绝，不进入业务逻辑', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    const missingSession = await h.callTool('skills', { action: 'list', goal: 'g', reason: 'r' });
+    expect(missingSession.isError).toBe(true);
+    expect(missingSession.text).toContain('sessionId');
+
+    const missingGoal = await h.callTool('skills', { action: 'list', sessionId, reason: 'r' });
+    expect(missingGoal.isError).toBe(true);
+    expect(missingGoal.text).toContain('goal');
+
+    const missingReason = await h.callTool('skills', { action: 'list', sessionId, goal: 'g' });
+    expect(missingReason.isError).toBe(true);
+    expect(missingReason.text).toContain('reason');
+
+    // schema 拒绝时不应留下 history
+    const session = expectOk(await h.callTool('session', { action: 'get', sessionId, goal: 'g', reason: 'r' }));
+    expect(session['history']).toEqual([]);
+  });
+
+  it('不同 session 的 base 与 history 互不串台', async () => {
+    const otherWorkspace = join(h.workspace, '..', 'other-project');
+    await mkdir(otherWorkspace, { recursive: true });
+
+    const first = await createSession();
+    const second = expectOk(
+      await h.callTool('session', { action: 'create', base: otherWorkspace, goal: 'g2', reason: 'r2' }),
+    );
+
+    expect(first['base']).toBe(h.workspace);
+    expect(second['base']).toBe(otherWorkspace);
+
+    expectOk(await h.callTool('skills', { action: 'list', sessionId: first['sessionId'] as string, goal: 'g', reason: 'r' }));
+    expectOk(await h.callTool('skills', { action: 'list', sessionId: second['sessionId'] as string, goal: 'g', reason: 'r' }));
+
+    const firstHistory = (expectOk(
+      await h.callTool('session', { action: 'get', sessionId: first['sessionId'] as string, goal: 'g', reason: 'r' }),
+    )['history'] as unknown[]).length;
+    const secondHistory = (expectOk(
+      await h.callTool('session', { action: 'get', sessionId: second['sessionId'] as string, goal: 'g', reason: 'r' }),
+    )['history'] as unknown[]).length;
+
+    expect(firstHistory).toBe(1);
+    expect(secondHistory).toBe(1);
+  });
+});
+
+describe('history 与终端日志', () => {
+  it('工具调用写入 history（goal / reason / target / ok）', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    expectError(
+      await h.callTool('skills', { action: 'get', sessionId, name: 'missing', goal: '读 skill', reason: '需要指引' }),
+    );
+
+    const session = expectOk(await h.callTool('session', { action: 'get', sessionId, goal: 'g', reason: 'r' }));
+    const history = session['history'] as Record<string, unknown>[];
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ tool: 'skills', action: 'get', goal: '读 skill', reason: '需要指引', ok: false });
+    expect(history[0]?.['target']).toBe('get missing');
+    expect(history[0]?.['error']).toMatch(/unknown skill/);
+  });
+
+  it('失败调用也留 history，且不包含文件正文 / 命令输出', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+    const secret = 'TOPSECRET-CONTENT';
+
+    expectError(
+      await h.callTool('skills', { action: 'get', sessionId, name: secret, goal: 'g', reason: 'r' }),
+    );
+
+    const session = expectOk(await h.callTool('session', { action: 'get', sessionId, goal: 'g', reason: 'r' }));
+    expect(JSON.stringify(session['history'])).not.toContain('content');
+  });
+
+  it('终端日志包含 session-create 事件与工具 call/done 行（含 sessionId / 目标 / 结果摘要 / 耗时）', async () => {
+    const created = await createSession();
+    const sessionId = created['sessionId'] as string;
+
+    expectOk(await h.callTool('skills', { action: 'list', sessionId, goal: '了解 skill', reason: '先看看' }));
+
+    expect(h.logs.some((line) => line.includes('event session-create') && line.includes(sessionId))).toBe(true);
+
+    const callLine = h.logs.find((line) => line.includes('call') && line.includes('skills'));
+    expect(callLine).toContain(`session="${sessionId}"`);
+    expect(callLine).toContain('goal="了解 skill"');
+    expect(callLine).toContain('reason="先看看"');
+
+    const doneLine = h.logs.find((line) => line.includes('done') && line.includes('skills'));
+    expect(doneLine).toMatch(/ok ms=\d+/);
+    expect(doneLine).toContain('result=');
+    expect(doneLine).toContain('"skills"');
+  });
+});

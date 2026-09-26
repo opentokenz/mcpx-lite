@@ -1,0 +1,138 @@
+import * as z from 'zod/v4';
+import { ToolError } from '../errors.js';
+import type { Logger } from '../log.js';
+import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
+import { GATEWAY_INSTRUCTIONS, resolveBase, type SessionStore } from '../session.js';
+import type { SkillIndex, SkillMeta } from '../skills.js';
+
+const SESSION_ACTIONS = ['create', 'resume', 'get', 'list', 'close'] as const;
+
+export const sessionSchema = withGoalReason({
+  action: z.enum(SESSION_ACTIONS).describe('create 新建 / resume 恢复 / get 查看 / list 列出 / close 释放'),
+  base: z.string().min(1).optional().describe('create 必填：项目锚点目录（必须已存在）'),
+  sessionId: z.string().min(1).optional().describe('resume / get / close 必填：形如 ses_xxxxxxxxxxxx'),
+});
+
+export const SESSION_DESCRIPTION = `会话管理：create / resume / get / list / close。
+
+Session 是「模型 ↔ 真实机器」之间的工作句柄，只记住三件事：base（项目锚点）、skill 索引、调用 history。
+除本工具外，其他 6 个工具都必须携带 sessionId；服务端不保存任何隐式「当前会话」。
+
+用途：
+- create：绑定一个已存在的项目目录作为 base，返回 sessionId、skill metadata 与全局提示词 instructions
+- resume：用 sessionId 重新激活会话（服务重启后、或 close 之后），并重新扫描 skill 索引
+- get：查看会话记录（base、时间、skills 快照、history 审计）
+- list：列出本机所有会话（按最近更新倒序）
+- close：释放会话句柄；之后必须 resume 才能继续使用
+
+参数：
+- action：必填
+- base：create 必填，必须是已存在的目录；相对路径基于服务进程 cwd 解析
+- sessionId：resume / get / close 必填
+- goal / reason：必填，写入 session history
+
+路径规则：base 只是相对路径解析基准与 bash 默认 cwd，不是权限边界；其他工具可以访问 base 之外的路径。
+
+示例：
+{ "action": "create", "base": "/workspace/project-a", "goal": "接手 project-a", "reason": "用户要求在该项目上持续工作" }
+{ "action": "resume", "sessionId": "ses_ab12cd34ef56", "goal": "继续上次任务", "reason": "客户端重启，需要恢复工作句柄" }
+{ "action": "list", "goal": "确认现有会话", "reason": "需要知道哪个 sessionId 还活着" }`;
+
+export function createSessionTool(deps: {
+  sessions: SessionStore;
+  skills: SkillIndex;
+  logger: Logger;
+}): ToolDef {
+  const { sessions, skills, logger } = deps;
+
+  return defineTool({
+    name: 'session',
+    title: 'Session（项目会话）',
+    description: SESSION_DESCRIPTION,
+    schema: sessionSchema,
+    annotations: { destructiveHint: false, openWorldHint: false },
+    describeCall: (args) => ({
+      target:
+        args.action === 'create'
+          ? `create ${args.base ?? ''}`
+          : args.action === 'list'
+            ? 'list'
+            : `${args.action} ${args.sessionId ?? ''}`,
+    }),
+    handler: async (args) => {
+      switch (args.action) {
+        case 'create': {
+          if (args.sessionId) throw new ToolError('session create 不接受 sessionId');
+          if (!args.base) throw new ToolError('session create 需要 base（项目锚点目录）');
+
+          const base = await resolveBase(args.base);
+          const found = await skills.scan(base);
+          const session = await sessions.create({ base, skills: found });
+
+          logger.event('session-create', { session: session.id, base: session.base, skills: found.length });
+
+          return {
+            sessionId: session.id,
+            base: session.base,
+            skills: metadata(found),
+            instructions: GATEWAY_INSTRUCTIONS,
+          };
+        }
+
+        case 'resume': {
+          const sessionId = requireSessionId(args.sessionId, 'resume');
+          const existing = await sessions.read(sessionId);
+          const found = await skills.scan(existing.base);
+          const session = await sessions.resume(sessionId, found);
+
+          logger.event('session-resume', { session: session.id, base: session.base, skills: found.length });
+
+          return {
+            sessionId: session.id,
+            base: session.base,
+            skills: metadata(found),
+            instructions: GATEWAY_INSTRUCTIONS,
+          };
+        }
+
+        case 'get': {
+          const session = await sessions.read(requireSessionId(args.sessionId, 'get'));
+          return session;
+        }
+
+        case 'list': {
+          const all = await sessions.list();
+          return {
+            sessions: all.map((session) => ({
+              sessionId: session.id,
+              base: session.base,
+              createdAt: session.createdAt,
+              updatedAt: session.updatedAt,
+              closedAt: session.closedAt,
+              skillCount: session.skills.length,
+              historyCount: session.history.length,
+            })),
+          };
+        }
+
+        case 'close': {
+          const session = await sessions.close(requireSessionId(args.sessionId, 'close'));
+          logger.event('session-close', { session: session.id, base: session.base });
+          return { sessionId: session.id, closedAt: session.closedAt };
+        }
+
+        default:
+          throw new ToolError(`unsupported action: ${String(args.action)}`);
+      }
+    },
+  });
+}
+
+function requireSessionId(sessionId: string | undefined, action: string): string {
+  if (!sessionId) throw new ToolError(`session ${action} 需要 sessionId`);
+  return sessionId;
+}
+
+function metadata(skills: SkillMeta[]): { name: string; description: string; source: string }[] {
+  return skills.map(({ name, description, source }) => ({ name, description, source }));
+}
