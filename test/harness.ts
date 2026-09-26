@@ -7,6 +7,9 @@ import { createApprovalCodec } from '../src/approval.js';
 import { TokenStore } from '../src/downloads.js';
 import { createHttpServer, loadConfig } from '../src/index.js';
 import { createLogger, type Logger } from '../src/log.js';
+import { createMcpConnection } from '../src/mcp-client.js';
+import { McpManager } from '../src/mcp-manager.js';
+import { McpTrustStore } from '../src/mcp-trust.js';
 import { buildServer, type Deps } from '../src/server.js';
 import { SessionStore } from '../src/session.js';
 import { SkillIndex } from '../src/skills.js';
@@ -16,8 +19,8 @@ export const PROTOCOL_VERSION = '2026-07-28';
 
 const META = {
   'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
-  // 2026-07-28 要求该字段存在；空对象明确表示客户端不声明 elicitation 等可选能力
-  'io.modelcontextprotocol/clientCapabilities': {},
+  // MRTR 测试客户端明确声明 form elicitation；server 才允许返回对应 input_required。
+  'io.modelcontextprotocol/clientCapabilities': { elicitation: { form: {} } },
 };
 
 export interface ToolCallOutcome {
@@ -26,6 +29,7 @@ export interface ToolCallOutcome {
   data: unknown;
   text: string;
   content?: { type: string; [key: string]: unknown }[];
+  structuredContent?: unknown;
   /** MCP wire-level resultType；新审批协议不会使用 input_required */
   resultType?: string;
   /** JSON-RPC 层错误（未知方法 / 传输层失败等） */
@@ -42,6 +46,17 @@ export interface ApprovalOptions {
   decision?: ApprovalDecision;
 }
 
+export interface ListedTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    openWorldHint?: boolean;
+  };
+}
+
 export interface McpClient {
   send: Send;
   callTool(name: string, args: Record<string, unknown>): Promise<ToolCallOutcome>;
@@ -51,7 +66,7 @@ export interface McpClient {
     args: Record<string, unknown>,
     opts?: ApprovalOptions,
   ): Promise<ToolCallOutcome>;
-  listTools(): Promise<{ name: string; description: string; inputSchema: Record<string, unknown> }[]>;
+  listTools(): Promise<ListedTool[]>;
 }
 
 export interface Harness {
@@ -72,7 +87,7 @@ export interface Harness {
     args: Record<string, unknown>,
     opts?: ApprovalOptions,
   ): Promise<ToolCallOutcome>;
-  listTools(): Promise<{ name: string; description: string; inputSchema: Record<string, unknown> }[]>;
+  listTools(): Promise<ListedTool[]>;
   /** 真实 HTTP 服务（路由 /mcp 与 /files），返回指向它的客户端 */
   startHttpServer(): Promise<{ origin: string; client: McpClient; close: () => Promise<void> }>;
   /** 用同一个 home 再建一个 harness，模拟「服务重启后 resume」 */
@@ -94,6 +109,27 @@ export function mcpHeaders(body: Record<string, unknown>): Record<string, string
     'mcp-protocol-version': PROTOCOL_VERSION,
     'mcp-method': method,
     'mcp-name': name,
+  };
+}
+
+
+export function mrtrRetryBody(
+  name: string,
+  args: Record<string, unknown>,
+  requestState: string,
+  inputResponses: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: {
+      name,
+      arguments: args,
+      requestState,
+      inputResponses,
+      _meta: META,
+    },
   };
 }
 
@@ -129,6 +165,7 @@ export function toOutcome(body: Record<string, unknown>): ToolCallOutcome {
         content?: { type: string; text?: string }[];
         isError?: boolean;
         resultType?: string;
+        structuredContent?: unknown;
       }
     | undefined;
   const content = result?.content ?? [];
@@ -147,6 +184,7 @@ export function toOutcome(body: Record<string, unknown>): ToolCallOutcome {
     data,
     text,
     content,
+    ...(result?.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
     ...(result?.resultType ? { resultType: result.resultType } : {}),
   };
 }
@@ -167,7 +205,7 @@ export function createClient(send: Send): McpClient {
     async listTools() {
       const body = await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: META } });
       const result = body['result'] as {
-        tools: { name: string; description: string; inputSchema: Record<string, unknown> }[];
+        tools: ListedTool[];
       };
       return result.tools;
     },
@@ -187,7 +225,12 @@ export function createHttpClient(origin: string): McpClient {
 }
 
 export async function createHarness(
-  opts: { home?: string; workspace?: string; ownedDirs?: string[] } = {},
+  opts: {
+    home?: string;
+    workspace?: string;
+    ownedDirs?: string[];
+    trashBackend?: { trash(path: string): Promise<void> };
+  } = {},
 ): Promise<Harness> {
   const owned = opts.ownedDirs ?? [];
   const home = opts.home ?? (await createOwnedDir(owned, 'mini-pi-home-'));
@@ -209,6 +252,16 @@ export async function createHarness(
     downloads,
     logger,
     approvals: createApprovalCodec(),
+    mcpManager: new McpManager({ connect: createMcpConnection }),
+    mcpTrust: new McpTrustStore(),
+    mcpGlobalPath: join(home, '.agents', 'mcp.json'),
+    trashBackend:
+      opts.trashBackend ??
+      ({
+        async trash() {
+          throw new Error('trash backend unavailable in test harness');
+        },
+      } satisfies { trash(path: string): Promise<void> }),
     config: loadConfig({ MINI_PI_MCP_HOME: home }),
   };
 
@@ -251,6 +304,7 @@ export async function createHarness(
     },
     restart: () => createHarness({ home, workspace, ownedDirs: owned }),
     cleanup: async () => {
+      await deps.mcpManager.closeAll();
       for (const dir of owned) await rm(dir, { recursive: true, force: true });
     },
   };

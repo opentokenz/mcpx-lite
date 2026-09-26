@@ -51,9 +51,11 @@ const SLOW_MS = 3_000;
 const TOOL_COLORS: Record<string, string> = {
   session: '36',
   skills: '35',
+  mcp_tool: '38;5;45',
   read: '34',
   write: '33',
   edit: '32',
+  trash: '38;5;160',
   shell: '38;5;208',
   export: '38;5;141',
 };

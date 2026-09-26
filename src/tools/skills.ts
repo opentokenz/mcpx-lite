@@ -27,11 +27,11 @@ project 目录的同名 skill 覆盖 global。创建 Session 时只读取元数�
 - sessionId：必填
 - action：必填
 - name：get 必填
-- goal / reason：必填，写入 session history
+- goal / reason：可选审计字段；提供时写入 session history
 
 示例：
-{ "action": "list", "sessionId": "ses_ab12cd34ef56", "goal": "挑选合适的 skill", "reason": "开始新任务前先看可用能力" }
-{ "action": "get", "sessionId": "ses_ab12cd34ef56", "name": "typescript", "goal": "按项目规范改代码", "reason": "需要 typescript skill 的具体指引" }`;
+{ "action": "list", "sessionId": "ses_ab12cd34ef56" }
+{ "action": "get", "sessionId": "ses_ab12cd34ef56", "name": "typescript" }`;
 
 export function createSkillsTool(deps: {
   sessions: SessionStore;
@@ -45,7 +45,7 @@ export function createSkillsTool(deps: {
     title: 'Skills（本机技能索引）',
     description: SKILLS_DESCRIPTION,
     schema: skillsSchema,
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     requiresSession: true,
     describeCall: (args) => ({
       target: args.name ? `${args.action} ${args.name}` : args.action,

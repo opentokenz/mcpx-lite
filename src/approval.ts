@@ -18,12 +18,14 @@ export const APPROVAL_INPUT_FIELDS = {
 export type ApprovalRisk = 'dangerous' | 'unknown';
 export type ApprovalDecision = 'approve' | 'cancel';
 
-/** 绑进 approval token 的最小事实：换 session / 换工具 / 换参数都必须重新审核。 */
+/** 绑进 approval token 的最小事实：换 session / 换工具 / 换业务参数都必须重新审核；goal / reason 仅用于审计，不参与授权比对。 */
 export interface ApprovalState {
   v: 1;
   sessionId: string;
   tool: string;
   argsHash: string;
+  /** 可选的业务前置状态摘要；用于审批等待期间检测文件等内容是否变化。 */
+  contextHash?: string;
   risk: ApprovalRisk;
 }
 
@@ -135,7 +137,7 @@ export interface ApprovalPrompt {
  * 普通 tool-result 审批门禁：
  * - 首轮 → 签发一次性随机 approvalToken，返回 approval_required 审核卡片，不执行副作用。
  * - 用户取消 → 校验 token 后消费并拒绝执行。
- * - 用户确认 → token 必须与 session / tool / 参数完全匹配，消费后才允许继续执行。
+ * - 用户确认 → token 必须与 session / tool / 业务参数匹配；goal / reason 可变化或省略，消费后才允许继续执行。
  *
  * 这个流程不依赖 MCP elicitation / input_required，因此可穿过不支持 MRTR 的客户端桥接层。
  */
@@ -144,6 +146,8 @@ export async function enforceApproval(opts: {
   sessionId: string;
   tool: string;
   argsHash: string;
+  contextHash?: string;
+  contextMismatchMessage?: string;
   approvalToken?: string;
   approvalDecision?: ApprovalDecision;
   prompt: ApprovalPrompt;
@@ -154,6 +158,8 @@ export async function enforceApproval(opts: {
     sessionId,
     tool,
     argsHash,
+    contextHash,
+    contextMismatchMessage,
     approvalToken,
     approvalDecision,
     prompt,
@@ -161,7 +167,14 @@ export async function enforceApproval(opts: {
   } = opts;
 
   if (!approvalToken) {
-    const token = await codec.mint({ v: 1, sessionId, tool, argsHash, risk: prompt.risk });
+    const token = await codec.mint({
+      v: 1,
+      sessionId,
+      tool,
+      argsHash,
+      ...(contextHash ? { contextHash } : {}),
+      risk: prompt.risk,
+    });
     observer?.approval({
       phase: 'required',
       risk: prompt.risk,
@@ -210,6 +223,10 @@ export async function enforceApproval(opts: {
       ...(prompt.fields ? { fields: prompt.fields } : {}),
     });
     throw new ToolError(`用户取消执行：${prompt.summary}`);
+  }
+
+  if (state.contextHash !== contextHash) {
+    throw new ToolError(contextMismatchMessage ?? 'approvalToken 与当前调用不匹配，请重新发起审核');
   }
 
   if (approvalDecision !== 'approve') {

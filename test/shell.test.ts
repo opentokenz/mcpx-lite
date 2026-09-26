@@ -201,7 +201,7 @@ describe('shell 风险门禁（审核卡片 + token）', () => {
     }
   });
 
-  it('用户确认后，完全相同的危险调用执行一次', async () => {
+  it('用户确认后，业务参数相同的危险调用执行一次', async () => {
     const target = join(h.workspace, 'approved.txt');
     const result = expectOk(await shellApproved({ command: 'touch approved.txt' }));
 
@@ -250,6 +250,24 @@ describe('shell 风险门禁（审核卡片 + token）', () => {
     expect(retry.text).toMatch(/不匹配/);
     await expect(access(join(h.workspace, 'one.txt'))).rejects.toThrow();
     await expect(access(join(h.workspace, 'two.txt'))).rejects.toThrow();
+  });
+
+  it('二次确认允许 goal / reason 改变或省略，只校验 shell 业务参数', async () => {
+    const target = join(h.workspace, 'audit-fields-ignored.txt');
+    const firstArgs = {
+      sessionId,
+      command: 'touch audit-fields-ignored.txt',
+      goal: '首轮目标',
+      reason: '首轮原因',
+    };
+    const token = expectApproval(await h.client.callTool('shell', firstArgs)).approvalToken;
+
+    const retryArgs = { sessionId, command: firstArgs.command };
+    const retry = toOutcome(await h.client.send(approvalRetryBody('shell', retryArgs, token)));
+
+    expect(retry.isError).toBe(false);
+    expect((retry.data as Record<string, unknown>)['exitCode']).toBe(0);
+    await expect(access(target)).resolves.toBeUndefined();
   });
 
   it('篡改 approvalToken 被拒绝，且不执行', async () => {

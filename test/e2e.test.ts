@@ -206,6 +206,33 @@ describe('export 工具（进程内）', () => {
     expect(retry.text).toMatch(/不匹配/);
   });
 
+  it('二次确认允许 goal / reason 改变，只校验 export 业务参数', async () => {
+    const outside = join(h.workspace, '..', 'outside-audit-fields.txt');
+    await writeFile(outside, 'audit-fields', 'utf8');
+
+    const created = expectOk(
+      await h.callTool('session', { action: 'create', base: h.workspace }),
+    );
+    const sessionId = created['sessionId'] as string;
+    const firstArgs = {
+      sessionId,
+      path: outside,
+      goal: '首轮导出目标',
+      reason: '首轮导出原因',
+    };
+    const token = expectApproval(await h.callTool('export', firstArgs)).approvalToken;
+
+    const retryArgs = {
+      ...firstArgs,
+      goal: '二次目标变化',
+      reason: '二次原因变化',
+    };
+    const retry = toOutcome(await h.client.send(approvalRetryBody('export', retryArgs, token)));
+
+    expect(retry.isError).toBe(false);
+    expect(retry.text).toContain('outside-audit-fields.txt');
+  });
+
   it('history 只记录路径与原因，不记录文件内容', async () => {
     await writeFile(join(h.workspace, 'secret.bin'), 'TOPSECRET-BYTES', 'utf8');
     const created = expectOk(
@@ -224,17 +251,24 @@ describe('export 工具（进程内）', () => {
 });
 
 describe('真实 HTTP 端到端', () => {
-  it('暴露恰好 7 个工具，描述都带使用说明与示例', async () => {
+  it('暴露恰好 9 个工具，描述都带使用说明与示例', async () => {
     server = await h.startHttpServer();
 
     const tools = await server.client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual(
-      ['shell', 'export', 'edit', 'read', 'session', 'skills', 'write'].sort(),
+      ['shell', 'export', 'edit', 'mcp_tool', 'read', 'session', 'skills', 'trash', 'write'].sort(),
     );
     for (const tool of tools) {
       expect(tool.description).toMatch(/示例/);
-      expect(tool.description).toContain('"reason"');
+      expect(tool.description).toMatch(/goal \/ reason：可选/);
+      expect(tool.description).not.toContain('"goal"');
+      expect(tool.description).not.toContain('"reason"');
+      expect(tool.annotations).toMatchObject({
+        readOnlyHint: expect.any(Boolean),
+        destructiveHint: expect.any(Boolean),
+        openWorldHint: expect.any(Boolean),
+      });
     }
   });
 
@@ -345,7 +379,7 @@ describe('真实 HTTP 端到端', () => {
     server = await h.startHttpServer();
 
     const tools = await server.client.listTools();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(9);
 
     const line = h.logs.find((entry) => entry.includes('mcp-request'));
     expect(line).toContain('method="POST"');
@@ -492,7 +526,12 @@ describe('真实 HTTP 端到端：安全确认（MRTR）', () => {
     const outside = join(h.workspace, '..', 'e2e-outside.txt');
     await writeFile(outside, 'old\n', 'utf8');
 
-    const args = { sessionId, path: outside, oldText: 'old', newText: 'new', goal: '改配置', reason: '需要越界编辑' };
+    const args = {
+      sessionId,
+      edits: [{ path: outside, replacements: [{ oldText: 'old', newText: 'new' }] }],
+      goal: '改配置',
+      reason: '需要越界编辑',
+    };
     const first = await client.callTool('edit', args);
     const token = expectApproval(first).approvalToken;
 
@@ -502,7 +541,8 @@ describe('真实 HTTP 端到端：安全确认（MRTR）', () => {
     const confirmed = expectOk(
       toOutcome(await client.send(approvalRetryBody('edit', args, token))),
     );
-    expect(confirmed['replaced']).toBe(1);
+    expect(confirmed['files']).toBe(1);
+    expect(confirmed['replacements']).toBe(1);
     expect(await readFile(outside, 'utf8')).toBe('new\n');
 
     // 安全事件以卡片状态进入观测日志

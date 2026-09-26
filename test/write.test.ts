@@ -174,6 +174,28 @@ describe('write base 边界门禁（MRTR）', () => {
     await expect(access(outside)).rejects.toThrow();
   });
 
+  it('二次确认允许 goal / reason 改变，只校验 write 业务参数', async () => {
+    const outside = outsideFile('audit-fields-ignored.txt');
+    const firstArgs = {
+      sessionId,
+      path: outside,
+      content: 'approved',
+      goal: '首轮目标',
+      reason: '首轮原因',
+    };
+    const token = expectApproval(await h.client.callTool('write', firstArgs)).approvalToken;
+
+    const retryArgs = {
+      ...firstArgs,
+      goal: '二次目标可以变化',
+      reason: '二次原因可以变化',
+    };
+    const retry = toOutcome(await h.client.send(approvalRetryBody('write', retryArgs, token)));
+
+    expect(retry.isError).toBe(false);
+    expect(await readFile(outside, 'utf8')).toBe('approved');
+  });
+
   it('用户取消后不写入', async () => {
     const outside = outsideFile('cancelled.txt');
     const args = { sessionId, goal: '写文件', reason: '落盘改动', path: outside, content: 'x' };

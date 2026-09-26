@@ -1,6 +1,8 @@
 import {
   isCallToolResult,
+  isInputRequiredResult,
   type CallToolResult,
+  type InputRequiredResult,
   type McpServer,
   type ServerContext,
   type ToolAnnotations,
@@ -77,12 +79,14 @@ const GOAL_FIELD = z
   .string()
   .min(1)
   .max(500)
-  .describe('本次要达成的整体目标（写入 session history）');
+  .optional()
+  .describe('可选审计字段：本次要达成的整体目标（写入 session history）');
 const REASON_FIELD = z
   .string()
   .min(1)
   .max(500)
-  .describe('为什么现在需要这一步调用（写入 session history）');
+  .optional()
+  .describe('可选审计字段：为什么现在需要这一步调用（写入 session history）');
 
 export function withGoalReason<T extends z.ZodRawShape>(shape: T) {
   return z.object({ ...shape, goal: GOAL_FIELD, reason: REASON_FIELD });
@@ -119,7 +123,7 @@ async function executeTool(opts: {
   ctx: ServerContext;
   sessions: SessionStore;
   logger: Logger;
-}): Promise<CallToolResult> {
+}): Promise<CallToolResult | InputRequiredResult> {
   const { tool, args, ctx, sessions, logger } = opts;
   const id = (callSequence += 1);
   const startedAt = Date.now();
@@ -167,7 +171,15 @@ async function executeTool(opts: {
       ms: Date.now() - startedAt,
       fields: { ...fields(), ...resultFields(result) },
     });
-    await recordHistory({ sessions, logger, tool, args, info, ok: true });
+    await recordHistory({
+      sessions,
+      logger,
+      tool,
+      args,
+      info,
+      ok: true,
+      summary: historySummary(result, info),
+    });
 
     return toCallToolResult(result);
   } catch (error) {
@@ -199,6 +211,7 @@ async function recordHistory(opts: {
   args: Record<string, unknown>;
   info: ToolCallInfo;
   ok: boolean;
+  summary?: string | undefined;
   error?: string;
 }): Promise<void> {
   if (!opts.tool.requiresSession) return;
@@ -213,6 +226,7 @@ async function recordHistory(opts: {
     reason: typeof opts.args['reason'] === 'string' ? opts.args['reason'] : '',
     target: opts.info.target,
     ok: opts.ok,
+    ...(opts.summary ? { summary: opts.summary } : {}),
     ...(typeof opts.args['action'] === 'string' ? { action: opts.args['action'] } : {}),
     ...(opts.error ? { error: opts.error } : {}),
   };
@@ -225,8 +239,29 @@ async function recordHistory(opts: {
   }
 }
 
-export function toCallToolResult(result: unknown): CallToolResult {
-  if (isCallToolResult(result)) return result;
+function historySummary(result: unknown, info: ToolCallInfo): string | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const value = result as Record<string, unknown>;
+  const parts: string[] = [];
+  const files = info.files ?? [];
+
+  if (files.length > 0) parts.push(`${files.length} paths`);
+  if (typeof value['files'] === 'number') parts.push(`${value['files']} files`);
+  if (typeof value['replacements'] === 'number') parts.push(`${value['replacements']} replacements`);
+  if (typeof value['succeeded'] === 'number') parts.push(`${value['succeeded']} succeeded`);
+  if (typeof value['failed'] === 'number') parts.push(`${value['failed']} failed`);
+
+  if (parts.length === 0) return undefined;
+  if (files.length > 0) {
+    const shown = files.slice(0, 3);
+    const remaining = files.length - shown.length;
+    parts.push(`${shown.join(', ')}${remaining > 0 ? `, +${remaining} more` : ''}`);
+  }
+  return parts.join('; ');
+}
+
+export function toCallToolResult(result: unknown): CallToolResult | InputRequiredResult {
+  if (isCallToolResult(result) || isInputRequiredResult(result)) return result;
   if (isApprovalRequiredResult(result)) {
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],

@@ -2,7 +2,7 @@
   "name": "mini-pi-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, read, write, edit, shell, export",
+  "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, mcp_tool, read, write, edit, trash, shell, export",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -14,9 +14,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.1.0",
     "@modelcontextprotocol/node": "^2.1.0",
     "@modelcontextprotocol/server": "^2.1.0",
     "mime-types": "^3.0.2",
+    "trash": "^10.1.1",
     "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },

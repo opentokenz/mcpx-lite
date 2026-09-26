@@ -1,107 +1,92 @@
-import { readFile, realpath, stat } from 'node:fs/promises';
 import * as z from 'zod/v4';
-import {
-  APPROVAL_INPUT_FIELDS,
-  enforceBaseBoundary,
-  hashArgs,
-  type ApprovalCodec,
-} from '../approval.js';
+import { APPROVAL_INPUT_FIELDS, enforceApproval, hashArgs, type ApprovalCodec } from '../approval.js';
+import { commitPreparedEdits, prepareBatchEdits } from '../edit-batch.js';
 import { ToolError } from '../errors.js';
-import { writeFileAtomic } from '../paths.js';
-import { defineTool, describePath, withGoalReason, type ToolDef } from '../registry.js';
+import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
 import { isInsideBase, resolvePath } from '../session.js';
+
+const replacementSchema = z.object({
+  oldText: z.string().min(1).describe('要被替换的原文；每一步必须恰好匹配一次'),
+  newText: z.string().describe('替换后的内容；空串表示删除'),
+});
+
+const fileEditSchema = z.object({
+  path: z.string().min(1).describe('相对路径基于 session.base 解析；绝对路径直接使用；允许 ..'),
+  replacements: z.array(replacementSchema).min(1).describe('按数组顺序应用的精确字面量替换'),
+});
 
 export const editSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
-  path: z.string().min(1).describe('相对路径基于 session.base 解析；绝对路径直接使用；允许 ..'),
-  oldText: z.string().min(1).describe('要被替换的原文（必须是文件中唯一出现的字面量片段）'),
-  newText: z.string().describe('替换后的内容；传空串表示删除这段内容'),
+  edits: z.array(fileEditSchema).min(1).max(100).describe('要作为一个批次执行的文件编辑'),
   ...APPROVAL_INPUT_FIELDS,
 });
 
-export const EDIT_DESCRIPTION = `精确替换文件中的一段文本（字面量匹配，不是正则）。
+export const EDIT_DESCRIPTION = `批量精确替换一个或多个文件中的文本（字面量匹配，不是正则）。
 
-用途：改代码的主力工具。oldText 必须在文件中恰好出现一次：0 次或多次都直接报错且不改文件。
-风险：edit 会真实修改磁盘文件且不可撤销。删除代码、大段覆盖实现、修改关键配置或公共接口前，
-必须先用自然语言向用户说明要改什么、影响范围，得到用户明确确认后再调用；
-涉及 git 提交 / 撤销等操作请走 shell 并向用户确认。
-
+用途：改代码的主力工具。每个 replacement 的 oldText 在当时内容中必须恰好出现一次。
+整个 edits[] 是一个批次：全部预检成功前不写入；提交中途失败时尽力回滚已写文件。
+旧 path / oldText / newText schema 已被废弃，调用只接受 edits[]。
 参数：
 - sessionId：必填
-- path：相对路径基于 session.base 解析；绝对路径直接使用；允许 ..
-- oldText：唯一匹配的原文片段（要包含足够上下文来保证唯一）
-- newText：替换内容；空串 = 删除
-- goal / reason：必填，写入 session history
-
-边界门禁（服务端强制执行）：base 是文件类工具的信任边界。
-- 目标文件解析后的真实路径位于 session.base 内时，保持无确认直接编辑。
-- 真实路径落在 base 之外（../ 穿越、绝对路径指向外部、base 内 symlink 指向外部）时，
-  服务端不修改文件，而是返回普通 approval_required 审核卡片和一次性 approvalToken。
-- 调用方必须让用户选择“确认执行 / 取消”；确认后只有携带相同 path / oldText / newText、
-  approvalToken + approvalDecision=approve 的重试才会写入。
-- 边界判断以 realpath 后的真实目标为准，不做字符串前缀比较。
-
-行为：读取 → 校验唯一匹配 → 原子写回；返回 path / replaced（固定 1）/ bytes。
+- edits：文件编辑数组；每个文件含 path 与按顺序应用的 replacements
+- goal / reason：可选审计字段；提供时写入 session history
 
 示例：
-{ "sessionId": "ses_ab12cd34ef56", "path": "src/config.ts", "oldText": "timeout: 30,", "newText": "timeout: 60,", "goal": "把超时调大一倍", "reason": "接口在高延迟网络下会超时" }`;
+{ "sessionId": "ses_ab12cd34ef56", "edits": [{ "path": "src/config.ts", "replacements": [{ "oldText": "timeout: 30,", "newText": "timeout: 60," }] }] }`;
 
 export function createEditTool(approvals: ApprovalCodec): ToolDef {
   return defineTool({
     name: 'edit',
-    title: 'Edit（精确替换）',
+    title: 'Edit（批量精确替换）',
     description: EDIT_DESCRIPTION,
     schema: editSchema,
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     requiresSession: true,
-    describeCall: (args, session) => describePath(session, args.path),
+    describeCall: (args, session) => ({
+      target: `${args.edits.length} files`,
+      files: session ? args.edits.map((edit) => resolvePath(session.base, edit.path)) : [],
+      fields: { paths: args.edits.map((edit) => edit.path) },
+    }),
     handler: async (args, _ctx, session, observe) => {
       if (!session) throw new ToolError('edit 需要有效 sessionId');
 
-      const absolute = resolvePath(session.base, args.path);
+      const prepared = await prepareBatchEdits(session.base, args.edits);
 
-      let info;
-      try {
-        info = await stat(absolute);
-      } catch {
-        throw new ToolError(`file does not exist: ${absolute}`);
-      }
-      if (!info.isFile()) throw new ToolError(`not a regular file: ${absolute}`);
-
-      // 用真实目标（解析 symlink 之后）判断边界，避免用字符串前缀误判；
-      // 读写也走真实目标，避免 rename 把 symlink 本身替换成普通文件。
-      const target = await realpath(absolute);
-      if (!isInsideBase(session.base, target)) {
-        const approval = await enforceBaseBoundary({
+      const outsideTargets = prepared.filter((file) => !isInsideBase(session.base, file.target));
+      if (outsideTargets.length > 0) {
+        const contextHash = hashArgs(prepared.map((file) => [file.target, file.originalHash]));
+        const approval = await enforceApproval({
           codec: approvals,
           sessionId: session.id,
           tool: 'edit',
-          argsHash: hashArgs([args.path, args.oldText, args.newText]),
+          argsHash: hashArgs(args.edits),
+          contextHash,
+          contextMismatchMessage: `concurrent_modification: target changed while awaiting approval`,
           ...(args.approvalToken ? { approvalToken: args.approvalToken } : {}),
           ...(args.approvalDecision ? { approvalDecision: args.approvalDecision } : {}),
-          action: '编辑',
-          path: absolute,
-          target,
-          base: session.base,
           observer: observe,
+          prompt: {
+            risk: 'dangerous',
+            riskLabel: 'edit.outside-base · 批次包含 session.base 外真实目标',
+            summary: `批量编辑 ${prepared.length} 个文件`,
+            message: [
+              '这个批量编辑包含 session.base 之外的真实目标：',
+              '',
+              ...outsideTargets.map((file) => `- ${file.target}`),
+              '',
+              `base：${session.base}`,
+            ].join('\n'),
+            fields: { paths: outsideTargets.map((file) => file.target) },
+          },
         });
         if (approval) return approval;
       }
 
-      const current = await readFile(target, 'utf8');
-      const occurrences = current.split(args.oldText).length - 1;
-
-      if (occurrences === 0) throw new ToolError(`oldText not found in ${absolute}`);
-      if (occurrences > 1) {
-        throw new ToolError(
-          `oldText matches ${occurrences} times in ${absolute}; include more context to make it unique`,
-        );
-      }
-
-      const next = current.replace(args.oldText, args.newText);
-      await writeFileAtomic(target, next);
-
-      return { path: absolute, replaced: 1, bytes: Buffer.byteLength(next, 'utf8') };
+      await commitPreparedEdits(prepared);
+      return {
+        files: prepared.length,
+        replacements: prepared.reduce((total, file) => total + file.replacements, 0),
+      };
     },
   });
 }

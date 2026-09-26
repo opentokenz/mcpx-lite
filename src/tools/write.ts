@@ -27,19 +27,17 @@ export const WRITE_DESCRIPTION = `创建或覆盖文件（整文件写入，不�
 - sessionId：必填
 - path：相对路径基于 session.base 解析；绝对路径直接使用；允许 ..
 - content：完整文件内容（UTF-8）
-- goal / reason：必填，写入 session history
+- goal / reason：可选审计字段；提供时写入 session history
 
 行为：自动创建缺失的父目录；写入使用「临时文件 + rename」原子替换；返回 path / bytes / created。
 
 base 边界门禁（服务端强制执行）：
-- base 是文件类工具的信任边界：目标真实路径（解析 symlink 之后，允许尚不存在）在 base 内时直接写入。
-- 落在 base 外（../ 穿越、绝对路径、父目录或目标本身是 symlink 逃逸）时，服务端不写文件，
-  而是返回普通 approval_required 审核卡片和一次性 approvalToken。
-- 调用方必须让用户选择“确认执行 / 取消”；确认后只有携带相同 path / content、
-  approvalToken + approvalDecision=approve 的重试才会写入。
+- base 内真实目标直接写入。
+- base 外或真实路径无法解析时先返回 approval_required；确认前不写文件。
+- 用户确认后用原 path / content 携带 approvalToken + approvalDecision=approve 重试。
 
 示例：
-{ "sessionId": "ses_ab12cd34ef56", "path": "src/utils/format.ts", "content": "export const format = (v: string) => v.trim();\\n", "goal": "补齐格式化工具", "reason": "新模块缺少 format 工具函数" }`;
+{ "sessionId": "ses_ab12cd34ef56", "path": "src/utils/format.ts", "content": "export const format = (v: string) => v.trim();\\n" }`;
 
 export function createWriteTool(approvals: ApprovalCodec): ToolDef {
   return defineTool({
@@ -47,7 +45,7 @@ export function createWriteTool(approvals: ApprovalCodec): ToolDef {
     title: 'Write（写文件）',
     description: WRITE_DESCRIPTION,
     schema: writeSchema,
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     requiresSession: true,
     describeCall: (args, session) => describePath(session, args.path),
     handler: async (args, _ctx, session, observe) => {

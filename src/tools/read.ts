@@ -26,21 +26,21 @@ export const READ_DESCRIPTION = `读取文本文件内容（按行分页）。
 - path：相对路径基于 session.base 解析；绝对路径直接使用；允许 .. 离开 base
 - offset：起始行号（0 基），默认 0
 - limit：最多返回行数，默认 200（配合 offset 翻页；返回里带 hasMore / totalLines）
-- goal / reason：必填，写入 session history
+- goal / reason：可选审计字段；提供时写入 session history
 
 行为：只读工具，不受 base 边界限制：base 外也能直接读，不需要用户确认。
 最多返回 100_000 字符，超出时截断并置 truncated=true。
 
 示例：
-{ "sessionId": "ses_ab12cd34ef56", "path": "src/index.ts", "limit": 100, "goal": "了解入口实现", "reason": "需要确认索引文件结构" }
-{ "sessionId": "ses_ab12cd34ef56", "path": "/tmp/build.log", "offset": 400, "limit": 200, "goal": "定位失败原因", "reason": "构建失败，需要看后半段日志" }`;
+{ "sessionId": "ses_ab12cd34ef56", "path": "src/index.ts", "limit": 100 }
+{ "sessionId": "ses_ab12cd34ef56", "path": "/tmp/build.log", "offset": 400, "limit": 200 }`;
 
 export const readTool = defineTool({
   name: 'read',
   title: 'Read（读文本文件）',
   description: READ_DESCRIPTION,
   schema: readSchema,
-  annotations: { readOnlyHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   requiresSession: true,
   describeCall: (args, session) => describePath(session, args.path),
   handler: async (args, _ctx, session) => {

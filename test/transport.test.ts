@@ -31,25 +31,95 @@ afterEach(async () => {
 });
 
 describe('tools/list', () => {
-  it('session 与 skills 都已注册，且描述里带使用说明与示例', async () => {
+  it('9 个工具都提供最小参数示例，goal / reason 只作为可选审计字段说明', async () => {
     const tools = await h.listTools();
     const names = tools.map((tool) => tool.name);
 
     expect(names).toContain('session');
     expect(names).toContain('skills');
+    expect(names).toContain('mcp_tool');
+    expect(names).toContain('trash');
+    expect(names).toHaveLength(9);
 
     for (const tool of tools) {
       expect(tool.description).toMatch(/示例/);
-      expect(tool.description).toContain('"goal"');
-      expect(tool.description).toContain('"reason"');
+      expect(tool.description).toMatch(/goal \/ reason：可选/);
+      expect(tool.description).not.toContain('"goal"');
+      expect(tool.description).not.toContain('"reason"');
       expect(tool.inputSchema['type']).toBe('object');
     }
   });
 
-  it('工具的 inputSchema 暴露必填 goal / reason', async () => {
+  it('goal / reason 仍暴露为可选审计字段，但不进入 required', async () => {
+    const session = (await h.listTools()).find((tool) => tool.name === 'session');
+    const required = (session?.inputSchema['required'] ?? []) as string[];
+    const properties = (session?.inputSchema['properties'] ?? {}) as Record<string, unknown>;
+
+    expect(required).toContain('action');
+    expect(required).not.toContain('goal');
+    expect(required).not.toContain('reason');
+    expect(properties).toHaveProperty('goal');
+    expect(properties).toHaveProperty('reason');
+  });
+
+  it('9 个工具显式暴露完整且准确的安全 annotations', async () => {
+    const tools = Object.fromEntries((await h.listTools()).map((tool) => [tool.name, tool]));
+
+    expect(tools['session']?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(tools['skills']?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(tools['read']?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(tools['write']?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+    });
+    expect(tools['trash']?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+    });
+    expect(tools['edit']?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+    });
+    expect(tools['shell']?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: true,
+    });
+    expect(tools['export']?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(tools['mcp_tool']?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: true,
+    });
+  });
+
+  it('session close 的工具描述明确它只停用逻辑句柄且可以 resume，不删除数据或结束进程', async () => {
     const session = (await h.listTools()).find((tool) => tool.name === 'session');
 
-    expect(session?.inputSchema['required']).toEqual(expect.arrayContaining(['goal', 'reason', 'action']));
+    expect(session?.description).toMatch(/close.*逻辑.*句柄/s);
+    expect(session?.description).toMatch(/不会删除.*文件/s);
+    expect(session?.description).toMatch(/不会删除.*history/s);
+    expect(session?.description).toMatch(/不会.*进程/s);
+    expect(session?.description).toMatch(/resume.*恢复/s);
   });
 });
 
@@ -191,7 +261,7 @@ describe('skills 工具', () => {
 });
 
 describe('schema 与隔离', () => {
-  it('缺 sessionId / goal / reason 被 inputSchema 拒绝，不进入业务逻辑', async () => {
+  it('sessionId 仍必填；省略 goal / reason 仍可执行并以空值写入审计 history', async () => {
     const created = await createSession();
     const sessionId = created['sessionId'] as string;
 
@@ -199,17 +269,17 @@ describe('schema 与隔离', () => {
     expect(missingSession.isError).toBe(true);
     expect(missingSession.text).toContain('sessionId');
 
-    const missingGoal = await h.callTool('skills', { action: 'list', sessionId, reason: 'r' });
-    expect(missingGoal.isError).toBe(true);
-    expect(missingGoal.text).toContain('goal');
+    expectOk(await h.callTool('skills', { action: 'list', sessionId }));
 
-    const missingReason = await h.callTool('skills', { action: 'list', sessionId, goal: 'g' });
-    expect(missingReason.isError).toBe(true);
-    expect(missingReason.text).toContain('reason');
-
-    // schema 拒绝时不应留下 history
     const session = expectOk(await h.callTool('session', { action: 'get', sessionId, goal: 'g', reason: 'r' }));
-    expect(session['history']).toEqual([]);
+    expect(session['history']).toHaveLength(1);
+    expect((session['history'] as Record<string, unknown>[])[0]).toMatchObject({
+      tool: 'skills',
+      action: 'list',
+      goal: '',
+      reason: '',
+      ok: true,
+    });
   });
 
   it('不同 session 的 base 与 history 互不串台', async () => {

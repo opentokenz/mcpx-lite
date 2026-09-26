@@ -28,35 +28,27 @@ export const shellSchema = withGoalReason({
 
 export const SHELL_DESCRIPTION = `在真实机器上执行 Shell 命令，返回 stdout / stderr / exitCode（cwd 默认为 session.base）。
 
-本工具是「Shell execution capability」，不是某个具体 Shell 实现：当前 runtime 用 /bin/bash -c 执行，
-未来可以换成 sh / zsh，参数与返回结构不变。
-
-用途：跑测试、装依赖、用 git、grep/find/ls、编译、起一次性脚本——所有"在真实机器上执行"的事情都走这里。
-本工具就是真实 shell：可以 cd 到任意目录、读写 base 之外的文件、访问网络、启动进程。
+用途：运行真实机器上的命令，例如测试、编译、Git 与只读查询。默认 cwd 是 session.base，
+但命令可以访问 base 之外的路径、网络和进程，因此可能产生真实且持久的副作用。
+需要删除文件或目录时优先使用 trash 工具；shell 的 rm / rmdir 仍按危险命令要求审核。
 
 参数：
 - sessionId：必填
 - command：必填，Shell command（管道、&&、重定向都可用）
 - timeout：默认 120000ms，上限 600000ms；超时杀整个进程组并返回 timedOut=true
-- goal / reason：必填，写入 session history
+- goal / reason：可选审计字段；提供时写入 session history
 
 行为：stdout / stderr 各自最多保留 100_000 字符（超出置 stdoutTruncated / stderrTruncated）。
 没有沙箱、没有回滚：命令产生的副作用会真实保留。
 
-风险门禁（服务端强制执行，不依赖模型自觉）：
-- 明确安全的命令（pwd / ls / cat / rg / grep / git status / git diff / git log / git show /
-  pnpm test / pnpm typecheck / pnpm lint / vitest run / tsc --noEmit 等只读命令及其组合）直接执行。
-- 任一子命令是危险命令（rm / mv / cp / chmod / git add|commit|push|reset|clean|rebase|merge|checkout|restore、
-  安装或删除依赖、curl / wget、sudo / kill 等）或无法静态判断（命令替换、重定向、子 shell、变量展开、
-  解释器包装、未列入白名单的命令）时，服务端不执行 shell，而是返回普通 approval_required 审核卡片。
-- 审核卡片包含一次性 approvalToken 与“确认执行 / 取消”选项；调用方必须让用户选择。
-- 用户确认后，以完全相同的 command / timeout 携带 approvalToken + approvalDecision=approve 重试才会真正执行；
-  cancel、token 过期/篡改或参数变化都会拒绝执行。
-- 长命令按顶层 && / || / ; / 管道拆开逐段判定，任何一段不安全都会触发确认。
+风险门禁（服务端强制执行）：
+- 明确安全的只读命令直接执行。
+- 危险或无法静态证明安全的命令先返回 approval_required，确认前不会启动 shell。
+- 用户确认后用原 command / timeout 携带 approvalToken + approvalDecision=approve 重试；取消、token 失效或参数变化都不会执行。
 
 示例：
-{ "sessionId": "ses_ab12cd34ef56", "command": "pnpm test", "timeout": 300000, "goal": "跑回归测试", "reason": "改完 edit 后需要确认没有破坏行为" }
-{ "sessionId": "ses_ab12cd34ef56", "command": "git status --short", "goal": "确认工作区状态", "reason": "提交前核对改动范围" }`;
+{ "sessionId": "ses_ab12cd34ef56", "command": "pnpm test", "timeout": 300000 }
+{ "sessionId": "ses_ab12cd34ef56", "command": "git status --short" }`;
 
 export function createShellTool(approvals: ApprovalCodec): ToolDef {
   return defineTool({
@@ -64,7 +56,7 @@ export function createShellTool(approvals: ApprovalCodec): ToolDef {
     title: 'Shell（真实 shell）',
     description: SHELL_DESCRIPTION,
     schema: shellSchema,
-    annotations: { destructiveHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     requiresSession: true,
     describeCall: (args) => ({ target: firstLine(args.command), fields: { command: args.command } }),
     handler: async (args, _ctx, session, observe) => {

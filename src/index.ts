@@ -6,9 +6,13 @@ import { localhostHostValidation, localhostOriginValidation, toNodeHandler } fro
 import { createApprovalCodec } from './approval.js';
 import { DEFAULT_TTL_MS, TokenStore, createFilesRoute } from './downloads.js';
 import { createLogger, resolveLogLevel, type Logger, type LogLevel } from './log.js';
+import { createMcpConnection } from './mcp-client.js';
+import { McpManager } from './mcp-manager.js';
+import { McpTrustStore } from './mcp-trust.js';
 import { buildHandler, type Deps } from './server.js';
 import { SessionStore } from './session.js';
 import { SkillIndex, SKILLS_SUBDIR } from './skills.js';
+import { createSystemTrashBackend } from './trash.js';
 
 export interface Config {
   host: string;
@@ -111,8 +115,26 @@ function createDeps(config: Config, logger?: Logger): { deps: Deps; logger: Logg
       downloads: new TokenStore({ ttlMs: config.downloadTtlMs }),
       logger: resolvedLogger,
       approvals: createApprovalCodec(),
+      mcpManager: new McpManager({ connect: createMcpConnection }),
+      mcpTrust: new McpTrustStore(),
+      mcpGlobalPath: join(homedir(), '.agents', 'mcp.json'),
+      trashBackend: createSystemTrashBackend(),
       config: { host: config.host, port: config.port },
     },
+  };
+}
+
+export function createShutdownHandler(opts: {
+  logger: Pick<Logger, 'event'>;
+  manager: { closeAll(): Promise<void> };
+  server: { close(done: () => void): unknown };
+  exit: (code: number) => void;
+}) {
+  return async (signal: string): Promise<void> => {
+    opts.logger.event('shutdown', { signal });
+    await opts.manager.closeAll();
+    await new Promise<void>((done) => void opts.server.close(done));
+    opts.exit(0);
   };
 }
 
@@ -136,12 +158,14 @@ export async function main(): Promise<void> {
     });
   }
 
-  const shutdown = (signal: string) => {
-    logger.event('shutdown', { signal });
-    server.close(() => process.exit(0));
-  };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  const shutdown = createShutdownHandler({
+    logger,
+    manager: deps.mcpManager,
+    server,
+    exit: (code) => process.exit(code),
+  });
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
 const entry = process.argv[1];

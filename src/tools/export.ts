@@ -45,26 +45,20 @@ export const EXPORT_DESCRIPTION = `把真实机器上的指定文件交给 MCP �
 - sessionId：必填
 - path：相对路径基于 session.base 解析；绝对路径直接使用；允许 ..
 - delivery：link（默认）/ base64
-- goal / reason：必填，写入 session history
+- goal / reason：可选审计字段；提供时写入 session history
 
-返回（link）：一个 resource_link（支持 MCP resource link 的客户端可直接识别）+ 一段 JSON
-（name / mimeType / size / path / url / expiresAt）。
-url 形如 \${origin}/files/<token>：只对应这一个文件、不接受任何 path 参数、**5 分钟后失效**，
-需要在过期前取走；重新调用 export 会签发新链接。
-origin 的取值顺序：Forwarded（RFC 7239）→ X-Forwarded-Proto + X-Forwarded-Host → 请求自身的
-绝对 URL（非回环地址）→ 服务配置的 host:port；反向代理部署时转发这些头就能拿到对外域名。
+返回：
+- link：resource_link + 文件摘要，临时链接 5 分钟后失效。
+- base64：embedded resource + 文件摘要，内联上限 1 MiB。
 
-返回（base64）：一个 embedded resource（uri / mimeType / blob=base64）+ 一段 JSON
-（name / mimeType / size / path / encoding / sha256），可用 sha256 校验组装结果。
-
-base 边界门禁（服务端强制执行）：base 是写类/外带工具的信任边界；目标真实路径（解析 symlink 之后）
-落在 base 外时返回普通 approval_required 审核卡片和一次性 approvalToken，确认前不会读取内容、也不会签发任何链接。
-调用方必须让用户选择“确认执行 / 取消”；确认后只有携带相同 path / delivery、
-approvalToken + approvalDecision=approve 的重试才会继续导出。
+base 边界门禁（服务端强制执行）：
+- base 内真实目标直接导出。
+- base 外真实目标先返回 approval_required；确认前不读取内容、不签发链接。
+- 用户确认后用原 path / delivery 携带 approvalToken + approvalDecision=approve 重试。
 
 示例：
-{ "sessionId": "ses_ab12cd34ef56", "path": "dist/report.pdf", "goal": "把报告交给用户", "reason": "构建产物需要导出给远端" }
-{ "sessionId": "ses_ab12cd34ef56", "path": "dist/plan.xlsx", "delivery": "base64", "goal": "内联拿到表格", "reason": "回源链接客户端不可达" }`;
+{ "sessionId": "ses_ab12cd34ef56", "path": "dist/report.pdf" }
+{ "sessionId": "ses_ab12cd34ef56", "path": "dist/plan.xlsx", "delivery": "base64" }`;
 
 export function createExportTool(deps: {
   tokens: TokenStore;
@@ -79,7 +73,7 @@ export function createExportTool(deps: {
     title: 'Export（导出文件）',
     description: EXPORT_DESCRIPTION,
     schema: exportSchema,
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     requiresSession: true,
     describeCall: (args, session) => {
       const info = describePath(session, args.path);
