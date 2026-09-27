@@ -31,16 +31,48 @@ pnpm start            # 默认监听 127.0.0.1:8787
 
 Windows PowerShell 中也使用 `pnpm install` 与 `pnpm start`。创建 session 时，`workspace` 可使用盘符路径或 UNC 路径，例如 `C:\work\project` 或 `\\server\share\project`。
 
-## Windows 可执行文件
+## 平台可执行文件
 
-安装 [Bun](https://bun.sh)，然后在任一支持 Bun 的构建主机上运行：
+安装 [Bun](https://bun.sh) 和项目依赖（`pnpm install`），即可在支持 Bun 的构建主机上交叉构建以下平台目标。
+可分别运行平台脚本，也可加 `:x64` 或 `:arm64` 只构建一种架构。
+
+### macOS
+
+```bash
+pnpm build:macos
+```
+
+产物：`dist/mini-pi-mcp-macos-x64`（Intel）和 `dist/mini-pi-mcp-macos-arm64`（Apple Silicon）。
+
+### Linux
+
+```bash
+pnpm build:linux
+```
+
+产物：`dist/mini-pi-mcp-linux-x64` 和 `dist/mini-pi-mcp-linux-arm64`。
+
+### Windows
 
 ```powershell
-pnpm install
 pnpm build:windows
 ```
 
-构建结果位于 `dist/mini-pi-mcp-win-x64.exe` 与 `dist/mini-pi-mcp-win-arm64.exe`。exe 不内置用户配置、skills 或 session；这些数据仍从当前用户 home 目录和项目目录读取。ARM64 exe 需在原生 Windows ARM64 设备上运行验收。
+产物：`dist/mini-pi-mcp-win-x64.exe` 与 `dist/mini-pi-mcp-win-arm64.exe`。
+exe 不内置用户配置、skills 或 session；这些数据仍从当前用户 home 目录和项目目录读取。
+Windows ARM64 exe 需在原生 Windows ARM64 设备上运行验收。
+
+### 安装到本机
+
+在仓库根目录运行：
+
+```bash
+pnpm install:local
+```
+
+脚本按当前主机平台和架构构建当前 checkout 的代码，并将二进制安装到
+`~/.local/bin/mini-pi-mcp`。需要预先安装 pnpm、Bun 和项目依赖；脚本不会拉取 Git 更新，
+也不会修改 shell 配置或 PATH；若 `~/.local/bin` 不在 PATH 中，需自行添加。仅支持 macOS/Linux x64 与 ARM64。
 
 环境变量：
 
