@@ -63,7 +63,7 @@ export function defineTool<S extends z.ZodObject<any>>(def: {
 
 let callSequence = 0;
 
-/** 路径类工具（read / write / edit / export）共用的 history 与日志目标。 */
+/** 路径类工具（read / write / edit / fetch）共用的 history 与日志目标。 */
 export function describePath(session: SessionFile | undefined, path: string): ToolCallInfo {
   const fields = { path };
   try {

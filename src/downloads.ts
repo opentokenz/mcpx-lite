@@ -23,16 +23,16 @@ export interface DownloadRecord {
   expiresAt: string;
 }
 
-/** 按扩展名推断 MIME（下载 transport 与 export 内联传输共用）。 */
+/** 按扩展名推断 MIME（下载 transport 与 fetch 内联传输共用）。 */
 export function mimeTypeFor(path: string): string {
   return lookup(path) || 'application/octet-stream';
 }
 
 /**
- * 校验导出目标：必须存在且是普通文件；返回 stat 结果。
- * 无副作用，export 工具在向用户确认之前先用它做前置检查（确认前不得签发 token）。
+ * 校验获取目标：必须存在且是普通文件；返回 stat 结果。
+ * 无副作用，fetch 工具在向用户确认之前先用它做前置检查（确认前不得签发 token）。
  */
-export async function inspectExportable(path: string): Promise<Stats> {
+export async function inspectFetchable(path: string): Promise<Stats> {
   let info;
   try {
     info = await stat(path);
@@ -44,8 +44,8 @@ export async function inspectExportable(path: string): Promise<Stats> {
 }
 
 /**
- * export 工具的下载凭据：随机不透明 token → 恰好一个具体文件，带 TTL。
- * 签发前的 workspace 边界确认由 export 工具负责（见 enforceWorkspaceBoundary），token 本身只对这一个文件有效。
+ * fetch 工具的下载凭据：随机不透明 token → 恰好一个具体文件，带 TTL。
+ * 签发前的 workspace 边界确认由 fetch 工具负责（见 enforceWorkspaceBoundary），token 本身只对这一个文件有效。
  */
 export class TokenStore {
   private readonly records = new Map<string, DownloadRecord>();
@@ -62,7 +62,7 @@ export class TokenStore {
   }
 
   async mint(opts: { sessionId: string; path: string }): Promise<DownloadRecord> {
-    const info = await inspectExportable(opts.path);
+    const info = await inspectFetchable(opts.path);
 
     this.sweep();
 

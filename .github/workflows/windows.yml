@@ -1,0 +1,33 @@
+name: Windows compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.5.1
+          runtime: node@22
+          cache: true
+          require-lockfile: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build:windows
+      - name: Smoke test packaged x64 executable
+        shell: pwsh
+        run: |
+          $env:MINI_PI_MCP_BINARY = (Resolve-Path "dist/mini-pi-mcp-win-x64.exe").Path
+          pnpm vitest run test/server-startup.test.ts

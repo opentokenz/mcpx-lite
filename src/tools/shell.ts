@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as z from 'zod/v4';
 import {
   APPROVAL_INPUT_FIELDS,
@@ -7,8 +7,10 @@ import {
   type ApprovalCodec,
 } from '../approval.js';
 import { ToolError } from '../errors.js';
+import { analyzePowerShellCommand } from '../powershell-risk.js';
 import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
 import { analyzeShellCommand, summarizeRisk } from '../risk.js';
+import { buildShellLaunch, buildTreeKill } from './shell-runtime.js';
 
 const MAX_OUTPUT_CHARS = 100_000;
 const KILL_GRACE_MS = 5_000;
@@ -22,28 +24,28 @@ export const shellSchema = withGoalReason({
     .min(1)
     .max(600_000)
     .default(120_000)
-    .describe('超时毫秒数，默认 120000；超时后杀掉整个进程组'),
+    .describe('超时毫秒数，默认 120000；超时后杀掉整个进程树'),
   ...APPROVAL_INPUT_FIELDS,
 });
 
 export const SHELL_DESCRIPTION = `在真实机器上执行 Shell 命令，返回 stdout / stderr / exitCode（cwd 默认为 session.workspace）。
 
 用途：运行真实机器上的命令，例如测试、编译、Git 与只读查询。默认 cwd 是 session.workspace，
-但命令可以访问 workspace 之外的路径、网络和进程，因此可能产生真实且持久的副作用。
+但命令可以访问 workspace 之外的路径、网络和进程，因此可能产生真实且持久的副作用。macOS/Linux 使用 Bash，Windows 使用系统自带的 Windows PowerShell 5.1。
 需要删除文件或目录时优先使用 trash 工具；shell 的 rm / rmdir 仍按危险命令要求审核。
 
 参数：
 - sessionId：必填
 - command：必填，Shell command（管道、&&、重定向都可用）
-- timeout：默认 120000ms，上限 600000ms；超时杀整个进程组并返回 timedOut=true
+- timeout：默认 120000ms，上限 600000ms；超时杀整个进程树并返回 timedOut=true
 - goal / reason：可选审计字段；提供时写入 session history
 
 行为：stdout / stderr 各自最多保留 100_000 字符（超出置 stdoutTruncated / stderrTruncated）。
 没有沙箱、没有回滚：命令产生的副作用会真实保留。
 
 风险门禁（服务端强制执行）：
-- 明确安全的只读命令直接执行。
-- 危险或无法静态证明安全的命令先返回 approval_required，确认前不会启动 shell。
+- 明确安全的只读命令、unknown 命令与可撤回的本地 Git 操作直接执行；unknown 包括未列入规则的命令及无法静态分析的语法。
+- 命中危险命令规则/前缀的调用先返回 approval_required，确认前不会启动 shell；PowerShell 解析报错或解析器不可用时直接拒绝执行；可能丢弃本地改动的 Git 参数形式仍需审批；POSIX 下可解析的 bash / sh / zsh -c 会递归检查其命令字符串。
 - 用户确认后用原 command / timeout 携带 approvalToken + approvalDecision=approve 重试；取消、token 失效或参数变化都不会执行。
 
 示例：
@@ -62,8 +64,11 @@ export function createShellTool(approvals: ApprovalCodec): ToolDef {
     handler: async (args, _ctx, session, observe) => {
       if (!session) throw new ToolError('shell 需要有效 sessionId');
 
-      const analysis = analyzeShellCommand(args.command);
-      if (analysis.risk !== 'safe') {
+      const analysis =
+        process.platform === 'win32'
+          ? await analyzePowerShellCommand(args.command)
+          : analyzeShellCommand(args.command);
+      if (analysis.risk === 'dangerous') {
         const { kind, reason } = summarizeRisk(analysis);
         const triggered = analysis.findings.filter((finding) => finding.risk !== 'safe');
         const approval = await enforceApproval({
@@ -86,11 +91,13 @@ export function createShellTool(approvals: ApprovalCodec): ToolDef {
       }
 
       const startedAt = Date.now();
-      const child = spawn('/bin/bash', ['-c', args.command], {
+      const launch = buildShellLaunch(args.command);
+      const child = spawn(launch.command, launch.args, {
         cwd: session.workspace,
         env: process.env,
-        detached: true,
+        detached: launch.detached,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
 
       child.stdout?.setEncoding('utf8');
@@ -103,7 +110,7 @@ export function createShellTool(approvals: ApprovalCodec): ToolDef {
       let timedOut = false;
       const { code } = await waitForExit(child, args.timeout, () => {
         timedOut = true;
-        killProcessGroup(child);
+        killProcessTree(child);
       });
 
       return {
@@ -161,11 +168,18 @@ function waitForExit(
   });
 }
 
-function killProcessGroup(child: ChildProcess): void {
+function killProcessTree(child: ChildProcess): void {
   if (child.pid === undefined) return;
 
+  const strategy = buildTreeKill(child.pid);
+  if ('command' in strategy) {
+    const result = spawnSync(strategy.command, strategy.args, { stdio: 'ignore', windowsHide: true });
+    if (result.error || result.status !== 0) child.kill('SIGKILL');
+    return;
+  }
+
   try {
-    process.kill(-child.pid, 'SIGKILL');
+    process.kill(strategy.processGroup, strategy.signal);
   } catch {
     try {
       child.kill('SIGKILL');

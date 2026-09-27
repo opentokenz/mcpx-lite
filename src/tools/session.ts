@@ -31,7 +31,7 @@ Session 是「模型 ↔ 真实机器」之间的工作句柄，只记住三件�
 - sessionId：resume / get / close 必填
 - goal / reason：可选审计字段；提供时写入 session history
 
-路径规则：workspace 是相对路径解析基准与 shell 默认 cwd；对 write / edit / export 同时是信任边界，workspace 外先走 approval_required。trash 无论是否位于 workspace 内都先走 approval_required。read 可只读访问 workspace 外路径；shell 是否确认由命令风险判定。
+路径规则：workspace 是相对路径解析基准与 shell 默认 cwd；对 write / edit / fetch 同时是信任边界，workspace 外先走 approval_required。trash 无论是否位于 workspace 内都先走 approval_required。read 可只读访问 workspace 外路径；shell 是否确认由命令风险判定。
 
 示例：
 { "action": "create", "workspace": "/workspace/project-a" }

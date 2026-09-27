@@ -36,7 +36,7 @@ afterEach(async () => {
   await h.cleanup();
 });
 
-describe('shell 工具', () => {
+describe.skipIf(process.platform === 'win32')('shell 工具（Bash）', () => {
   it('默认 cwd 是 session.workspace，返回 stdout / exitCode / cwd', async () => {
     const result = expectOk(await shell({ command: 'pwd' }));
 
@@ -53,6 +53,17 @@ describe('shell 工具', () => {
 
     expect(outcome.resultType).not.toBe('input_required');
     expect(outcome.isError).toBe(false);
+  });
+
+  it('git add 直接执行并更新暂存区，不要求审批', async () => {
+    expectOk(await shellApproved({ command: 'git init' }));
+    await writeFile(join(h.workspace, 'staged.txt'), 'content\n', 'utf8');
+
+    const outcome = await shell({ command: 'git add staged.txt' });
+
+    expect(outcome.data).not.toMatchObject({ resultType: 'approval_required' });
+    expect(expectOk(outcome)['exitCode']).toBe(0);
+    expect(expectOk(await shell({ command: 'git diff --cached --name-only' }))['stdout']).toBe('staged.txt\n');
   });
 
   it('支持 shell 语法（管道、&&、引号）与 stderr 分流', async () => {
@@ -114,10 +125,26 @@ describe('shell 工具', () => {
     expect((result['stderr'] as string).length).toBe(100_000);
   });
 
-  it('命令失败（不存在）不抛异常，由 exitCode 表达', async () => {
-    const result = expectOk(await shellApproved({ command: 'definitely-not-a-command' }));
+  it('未知命令直接执行，不要求审批', async () => {
+    const outcome = await shell({ command: 'definitely-not-a-command' });
 
-    expect(result['exitCode']).toBe(127);
+    expect(outcome.resultType).toBe('complete');
+    expect(expectOk(outcome)['exitCode']).toBe(127);
+  });
+
+  it('无法静态分析的命令语法直接执行', async () => {
+    const result = expectOk(await shell({ command: "echo $(printf 'a&b|c')" }));
+
+    expect(result['stdout']).toBe('a&b|c\n');
+    expect(result['exitCode']).toBe(0);
+  });
+
+  it('顶层 & 后的危险命令仍要求审批', async () => {
+    const target = join(h.workspace, 'background-gated.txt');
+    const outcome = await shell({ command: 'touch background-gated.txt & echo done' });
+
+    expectApproval(outcome);
+    await expect(access(target)).rejects.toThrow();
   });
 
   it('history 只记录已执行的调用（确认中的调用不落 history）', async () => {
@@ -153,7 +180,7 @@ describe('shell 工具', () => {
   });
 });
 
-describe('shell 风险门禁（审核卡片 + token）', () => {
+describe.skipIf(process.platform === 'win32')('shell 风险门禁（审核卡片 + token，Bash）', () => {
   it('危险命令首次调用返回普通 approval_required 审核卡片且不产生副作用', async () => {
     const target = join(h.workspace, 'gated.txt');
     const outcome = await shell({ command: 'touch gated.txt' });
@@ -195,10 +222,19 @@ describe('shell 风险门禁（审核卡片 + token）', () => {
     await expect(access(target)).rejects.toThrow();
   });
 
-  it('无法静态分析的命令要求审核', async () => {
-    for (const command of ["bash -c 'git commit -m x'", 'node -e "1 + 1"', 'echo $(pwd)']) {
-      expectApproval(await shell({ command }));
-    }
+  it('解释器包装命令不要求审批', async () => {
+    const result = expectOk(await shell({ command: "bash -c 'printf wrapper'" }));
+
+    expect(result['stdout']).toBe('wrapper');
+    expect(result['exitCode']).toBe(0);
+  });
+
+  it('bash -c 中的危险命令仍要求审批', async () => {
+    const target = join(h.workspace, 'bash-c-gated.txt');
+    const outcome = await shell({ command: "bash -c 'touch bash-c-gated.txt'" });
+
+    expectApproval(outcome);
+    await expect(access(target)).rejects.toThrow();
   });
 
   it('用户确认后，业务参数相同的危险调用执行一次', async () => {

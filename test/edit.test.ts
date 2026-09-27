@@ -1,4 +1,4 @@
-import { readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -39,6 +39,17 @@ afterEach(async () => {
 });
 
 describe('edit 工具', () => {
+  it('精确编辑含空格的相对路径', async () => {
+    const path = join('folder with spaces', 'file name.txt');
+    const target = join(h.workspace, path);
+    await mkdir(join(h.workspace, 'folder with spaces'), { recursive: true });
+    await writeFile(target, 'before\n', 'utf8');
+
+    expectOk(await edit(single(path, 'before', 'after')));
+
+    expect(await readFile(target, 'utf8')).toBe('after\n');
+  });
+
   it('单文件单 replacement 成功并返回 files / replacements', async () => {
     await writeFile(join(h.workspace, 'app.ts'), 'const a = 1;\nconst b = 2;\n', 'utf8');
 

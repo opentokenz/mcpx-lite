@@ -27,6 +27,17 @@ afterEach(async () => {
 });
 
 describe('read 工具', () => {
+  it('读取含空格的相对路径', async () => {
+    const path = join('folder with spaces', 'file name.txt');
+    await mkdir(join(h.workspace, 'folder with spaces'), { recursive: true });
+    await writeFile(join(h.workspace, path), 'space-safe\n', 'utf8');
+
+    const result = expectOk(await read({ path }));
+
+    expect(result['path']).toBe(join(h.workspace, path));
+    expect(result['content']).toBe('space-safe');
+  });
+
   it('按行分页：offset / limit / totalLines / hasMore，content 不含行尾换行', async () => {
     const lines = Array.from({ length: 300 }, (_, index) => `line-${index + 1}`);
     await writeFile(join(h.workspace, 'big.txt'), `${lines.join('\n')}\n`, 'utf8');
@@ -103,13 +114,13 @@ describe('read 工具', () => {
     expect((result['content'] as string).length <= 100_000).toBe(true);
   });
 
-  it('二进制文件被拒绝并提示改用 export', async () => {
+  it('二进制文件被拒绝并提示改用 fetch', async () => {
     await writeFile(join(h.workspace, 'blob.bin'), Buffer.from([0x50, 0x4b, 0x00, 0x01, 0x02]));
 
     const message = expectError(await read({ path: 'blob.bin' }));
 
     expect(message).toMatch(/binary/);
-    expect(message).toMatch(/export/);
+    expect(message).toMatch(/fetch/);
   });
 
   it('文件不存在、目录、空 path 都是可读错误', async () => {

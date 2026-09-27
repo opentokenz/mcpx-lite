@@ -4,7 +4,7 @@
 
 - 协议：**MCP 2026-07-28**（无状态核心，无 `initialize` 握手）
 - Transport：**Streamable HTTP**，入口 `POST /mcp`
-- 工具：`session` / `skills` / `mcp_tool` / `read` / `write` / `edit` / `trash` / `shell` / `export`
+- 工具：`session` / `skills` / `mcp_tool` / `read` / `write` / `edit` / `trash` / `shell` / `fetch`
 - 不含：LLM、Provider、Agent Loop、Prompt Engine、RAG、Planner
 
 ```text
@@ -18,6 +18,9 @@ Studio / Agent / LLM
 
 - Node.js >= 22
 - pnpm
+- Windows 10/11：系统提供的 Windows PowerShell 5.1；shell 工具在 Windows 中使用 PowerShell，macOS/Linux 使用 Bash
+
+支持 Windows x64 与 ARM64。ARM64 的 PowerShell AST 解析器与 exe 需要在原生 ARM64 设备上验收。
 
 ## 快速开始
 
@@ -25,6 +28,19 @@ Studio / Agent / LLM
 pnpm install
 pnpm start            # 默认监听 127.0.0.1:8787
 ```
+
+Windows PowerShell 中也使用 `pnpm install` 与 `pnpm start`。创建 session 时，`workspace` 可使用盘符路径或 UNC 路径，例如 `C:\work\project` 或 `\\server\share\project`。
+
+## Windows 可执行文件
+
+安装 [Bun](https://bun.sh)，然后在任一支持 Bun 的构建主机上运行：
+
+```powershell
+pnpm install
+pnpm build:windows
+```
+
+构建结果位于 `dist/mini-pi-mcp-win-x64.exe` 与 `dist/mini-pi-mcp-win-arm64.exe`。exe 不内置用户配置、skills 或 session；这些数据仍从当前用户 home 目录和项目目录读取。ARM64 exe 需在原生 Windows ARM64 设备上运行验收。
 
 环境变量：
 
@@ -71,27 +87,27 @@ curl -s http://127.0.0.1:8787/mcp \
 
 ## Session Workspace 语义
 
-`workspace` 是**项目锚点**，同时是**写类 / 外带工具的信任边界**（`write` / `edit` / `export`）：
+`workspace` 是**项目锚点**，同时是**写类 / 外带工具的信任边界**（`write` / `edit` / `fetch`）：
 
 - 相对路径 → `resolve(workspace, path)`；绝对路径 → 直接使用；`..` 允许使用
-- `workspace` 内：`write` 直接写、`edit` 直接改、`export` 直接签发链接；`trash` 仍然必须确认
+- `workspace` 内：`write` 直接写、`edit` 直接改、`fetch` 直接签发链接；`trash` 仍然必须确认
 - `workspace` 外：三者都返回普通 `approval_required` 审核卡片与一次性 `approvalToken`，用户选择“确认执行”后
   用相同**业务参数**携带 `approvalToken + approvalDecision=approve` 重试才执行；`goal` / `reason` 可变化或省略。路径判定以**解析后的真实路径**为准
   （`realpath`，会跟随 symlink）
 - `read` **不受 workspace 限制**：只读且无副作用，workspace 内 / workspace 外都直接读，不需要确认
-- `shell` 的默认 `cwd = workspace`，但可以 `cd ..`、`cd /tmp`、访问任意目录：它的风险由**命令白名单**判定，不是路径判定（见下）
+- `shell` 的默认 `cwd = workspace`，但可以 `cd ..`、`cd /tmp`、访问任意目录：它的审批由**危险命令规则**判定，不是路径判定（见下）
 - 真正的边界仍然是运行 Mini Pi MCP 的进程所拥有的操作系统权限
 
 ## 安全门禁（shell / 文件类工具）
 
-高风险调用不再只靠提示词约束，而是由 MCP Server 强制执行：
+写类工具边界与命中的危险 shell 命令不再只靠提示词约束，而是由 MCP Server 强制执行：
 
 ```text
-shell / write / edit / trash / export 调用
+shell / write / edit / trash / fetch 调用
       │
-      ├─ 明确安全 ────────────────► 直接执行
+      ├─ 无需审批 ─────────────────► 直接执行
       │
-      └─ 危险 / 无法静态判断 ─────► complete tool result
+      └─ 需要审批 ─────────────────► complete tool result
                                         │
                                         ├─ resultType: approval_required
                                         ├─ approvalToken: apr_...
@@ -102,9 +118,9 @@ shell / write / edit / trash / export 调用
                                              真正执行
 ```
 
-**写类 / 外带工具（write / edit / export）**：按 `workspace` 划一条线：
+**写类 / 外带工具（write / edit / fetch）**：按 `workspace` 划一条线：
 
-- `workspace` 内 → 直接执行（safe）：`write` 直接写、`edit` 直接改、`export` 直接签发链接
+- `workspace` 内 → 直接执行（safe）：`write` 直接写、`edit` 直接改、`fetch` 直接签发链接
 - `workspace` 外 → 返回 `approval_required` 审核卡片（dangerous）：`../` 穿越、绝对路径指向外部、父目录或目标本身是 symlink 逃逸，
   以及真实路径无法解析（symlink 环等，fail closed）
 - 审核卡片包含一次性随机 `approvalToken`；调用方必须提供“确认执行 / 取消”选项，不能替用户做决定
@@ -114,15 +130,16 @@ shell / write / edit / trash / export 调用
 **trash**：不按 workspace 划信任边界。无论目标是文件、目录、链接还是位于 workspace 内外，首次调用都必须返回
 `approval_required`；确认后才逐项移动到操作系统回收站，永不 fallback 到永久删除。
 
-**shell**：白名单 + fail closed。每个顶层子命令（按 `&&` / `||` / `;` / 管道 / 换行拆分，尊重引号与转义）
-都必须判定为 safe，整条命令才直接执行：
+**shell**：命中危险命令规则时要求审批；safe 与 unknown 都直接执行。顶层子命令按 `&&` / `||` / `&` / `;` / 管道 / 换行拆分，尊重引号与转义，因此 `echo 'a&b|c'` 不会被误拆。
 
 - safe：`pwd` `ls` `cat` `head` `tail` `rg` `grep` `wc` 等只读命令、受限 `find`（无 `-exec` / `-delete` / `-fprint*`）、
   `git status|diff|log|show`、`pnpm test|typecheck|lint`、`vitest run`、`tsc --noEmit`
-- 危险：`rm` `mv` `cp` `touch` `mkdir` `chmod` `git add|commit|push|reset|clean|rebase|checkout|restore…`、
-  安装/删除依赖、`curl` / `wget`、`sudo` / `kill`、压缩解包、云与容器 CLI 等
-- unknown（fail closed）：命令替换、反引号、重定向、子 shell / 分组、变量展开、解释器包装（`bash -c` / `node -e` 等）、
-  以 `/` 开头的路径调用、未列入白名单的命令
+- 可撤回的本地 Git 操作直接执行，不要求审批：`git add`、`git mv`、`git apply`、`git fetch`、`git pull`、`git branch`、`git tag`、`git stash`、`git merge`、`git rebase`、`git switch`、切分支形式的 `git checkout`、`git config` 等。
+  `git checkout` 的 path / force / merge / patch 形式、`git checkout -B`、`git switch --discard-changes/-C/-f`、`git stash drop/clear`、`git branch -D/-f/-M`、`git tag -f`、`git mv -f`、`git apply --unsafe-paths` 等可能丢弃或覆盖本地改动的形式仍需审批
+- 危险（需要审批）：`rm`、危险的 `git` 子命令（包括 `push` / `reset` 等）、`mv` `cp` `touch` `mkdir` `chmod`、
+  `shutdown` / `reboot` / `restart`、磁盘分区/格式化和防火墙命令、安装/删除依赖、`curl` / `wget`、`sudo` / `kill`、压缩解包、云与容器 CLI 等；部分危险命令按可执行文件名前缀匹配，带路径调用按 basename 检查
+- unknown（直接执行，无需审批）：命令替换、反引号、重定向、子 shell / 分组、变量展开、未列入危险规则的命令及无法静态解析的语法；可解析的 `bash` / `sh` / `zsh -c` 会检查其命令字符串，内层命中危险规则时仍需审批，`node -e` 等未支持的包装仍按 unknown 放行
+- Windows PowerShell 命令会先用 AST 静态解析；Parser 不可用或命令存在语法错误时拒绝执行，不按 unknown 放行
 
 确认流程使用普通 tool result，不依赖 MCP elicitation / MRTR。首次危险调用返回：
 
@@ -207,7 +224,7 @@ shell / write / edit / trash / export 调用
 | `edit` | false | true | false |
 | `trash` | false | true | false |
 | `shell` | false | true | true |
-| `export` | true | false | false |
+| `fetch` | true | false | false |
 
 修改工具名称、description、input schema 或 annotations 后，重启 MCP 服务，并在 ChatGPT Developer Mode 中刷新 / 重新连接该 MCP connection，再重跑评估集。不要假设现有连接会立即重新扫描 metadata。
 
@@ -296,9 +313,9 @@ shell / write / edit / trash / export 调用
 }
 ```
 
-## Download（export 工具）
+## Download（fetch 工具）
 
-`export` 把真实机器上的指定文件交给调用方，两种交付方式：
+`fetch` 把真实机器上的指定文件交给调用方，两种交付方式：
 
 **`delivery: "link"`（默认）**：服务端只签发临时链接，实际下载由调用方完成：
 
@@ -336,14 +353,14 @@ shell / write / edit / trash / export 调用
   部署在反向代理后面时转发这些头，客户端就能拿到对外域名
 - 这些值来自请求头（调用方自述），单用户 runtime 下可接受；只接受 `http` / `https`，
   并会丢掉路径与非法值
-- 监听在通配地址（`0.0.0.0` / `::`）时，若又推断不出对外地址，会输出一条 `export-origin-warning`
+- 监听在通配地址（`0.0.0.0` / `::`）时，若又推断不出对外地址，会输出一条 `fetch-origin-warning`
   事件提醒：回退出来的链接客户端不可达，需要转发代理头或把 `MINI_PI_MCP_HOST` 设为客户端可达地址
 - 返回 URL 的 `origin` 按顺序取：`Forwarded`（RFC 7239）→ `X-Forwarded-Proto` + `X-Forwarded-Host` →
   请求自身的绝对 URL（仅当 hostname 不是回环地址）→ 服务配置的 `host:port`；
   部署在反向代理后面时转发这些头，客户端就能拿到对外域名
 - 这些值来自请求头（调用方自述），单用户 runtime 下可接受；只接受 `http` / `https`，
   并会丢掉路径与非法值
-- 监听在通配地址（`0.0.0.0` / `::`）时，若又推断不出对外地址，会输出一条 `export-origin-warning`
+- 监听在通配地址（`0.0.0.0` / `::`）时，若又推断不出对外地址，会输出一条 `fetch-origin-warning`
   事件提醒：回退出来的链接客户端不可达，需要转发代理头或把 `MINI_PI_MCP_HOST` 设为客户端可达地址
 
 ## 终端观测日志
@@ -364,7 +381,7 @@ shell / write / edit / trash / export 调用
   ! APPROVAL REQUIRED · trash.move · 将文件或目录移动到系统回收站
 
   goal 内联交付 · reason 链接不可达 · delivery base64 · session ses_ab12cd34ef56
-• Exported  dist/report.pdf
+• Fetched  dist/report.pdf
   ✓ 0ms · 2 blocks · resource, text
 
   goal 查看数据库表 · reason 需要确认 schema · session ses_ab12cd34ef56
@@ -381,22 +398,26 @@ shell / write / edit / trash / export 调用
 - 文件路径位于 `session.workspace` 内时显示为相对路径；workspace 外仍显示绝对路径，便于区分越界目标。
 - shell 的 `stdout` 使用灰色输出块，默认最多展示 800 字符；超长时继续换行并以 `… (+N chars)` 收尾。
 - `stderr` 非空时使用红色预览；结果状态始终放在最后一行：`✓ 耗时 · exit / result`，失败为 `✗`，安全确认为 `!`。
-- 结果摘要不再输出 JSON：shell 显示退出码与 stderr 长度，edit / trash / read / export 等使用各自的一行摘要。
+- 结果摘要不再输出 JSON：shell 显示退出码与 stderr 长度，edit / trash / read / fetch 等使用各自的一行摘要。
 - 终端宽度按实际 columns 使用（夹在 40–160），东亚宽字符按 2 列计算，不强制补白，也不画边框。
 - TTY 且未设 `NO_COLOR` 时启用 ANSI；非 TTY / `NO_COLOR` / 自定义 sink 下不输出转义序列，但保留同样层次。
 - 安全确认不再画整张卡片：标题、审计字段和必要的 risk / command 行保留，最后一行明确 `APPROVAL REQUIRED` 或 `RISK UNKNOWN`。
 - `debug`（默认）：调用起点 + transcript；`info`：结果 transcript + 安全事件；`off` / `quiet`：完全静默。
-- 文件正文、export 内联 blob 与完整命令输出不会写入日志；shell stdout / stderr 只保留上面的截断预览，完整内容仍在工具响应中。
+- 文件正文、fetch 内联 blob 与完整命令输出不会写入日志；shell stdout / stderr 只保留上面的截断预览，完整内容仍在工具响应中。
 
 ## 开发
 
 ```bash
-pnpm test          # vitest（269 个用例：268 通过 + 1 个默认跳过的真实回收站 smoke；含进程内 MCP 与真实 stdio / HTTP 端到端）
+pnpm test          # Vitest（含进程内 MCP 与真实 stdio / HTTP 端到端）
 pnpm typecheck     # tsc --noEmit
 pnpm test:watch
 # 真实系统回收站 smoke（macOS / Linux；会向当前 OS Trash 写入测试文件）
 MINI_PI_TRASH_SMOKE=1 pnpm vitest run test/trash-smoke.test.ts
-# Windows PowerShell: $env:MINI_PI_TRASH_SMOKE='1'; pnpm vitest run test/trash-smoke.test.ts
+```
+Windows PowerShell 回收站 smoke（会保留空的临时父目录，便于恢复测试文件后再手动清理）：
+```powershell
+$env:MINI_PI_TRASH_SMOKE='1'
+pnpm vitest run test/trash-smoke.test.ts
 ```
 
 目录：
@@ -416,7 +437,7 @@ src/
 ├── paths.ts        # 原子写文件 + realpathDeep（目标可尚不存在的真实路径解析）
 ├── edit-batch.ts   # 批量 edit prepare / hash / commit / rollback
 ├── trash.ts        # TrashBackend seam + 跨平台 trash npm 后端
-├── risk.ts         # shell 命令拆分 / tokenise / 安全白名单（fail closed）
+├── risk.ts         # shell 命令拆分 / tokenise / 危险命令分析
 ├── approval.ts     # 随机一次性 approvalToken + 审核卡片 + workspace 边界门禁 + 参数摘要
 ├── ansi.ts         # 可见宽度 / 宽度换行 / ANSI 着色 helper
 ├── log.ts          # 终端观测卡片（状态 / 配色 / 宽度自适应）

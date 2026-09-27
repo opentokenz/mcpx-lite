@@ -9,7 +9,7 @@ if (process.env.FIXTURE_START_MARKER) {
 
 serveStdio(() => {
   const server = new McpServer(
-    { name: 'downstream-fixture', version: '1.0.0' },
+    { name: process.argv[2] || 'downstream-fixture', version: '1.0.0' },
     { instructions: 'fixture instructions' },
   );
 

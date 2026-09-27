@@ -250,7 +250,7 @@ export function isApprovalRequiredResult(value: unknown): value is ApprovalRequi
 }
 
 /**
- * workspace 是文件类工具（write / edit / export）的信任边界：目标真实路径落在 workspace 之外
+ * workspace 是文件类工具（write / edit / fetch）的信任边界：目标真实路径落在 workspace 之外
  * 一律 dangerous，必须用户通过审核卡片确认后才能操作。
  *
  * `target === null` 表示真实路径无法解析（symlink 环 / 权限等），同样 fail closed。
@@ -262,7 +262,7 @@ export async function enforceWorkspaceBoundary(opts: {
   argsHash: string;
   approvalToken?: string;
   approvalDecision?: ApprovalDecision;
-  /** 动作用词，用于确认文案：写入 / 编辑 / 导出 */
+  /** 动作用词，用于确认文案：写入 / 编辑 / 获取 */
   action: string;
   /** resolve 之后的请求路径 */
   path: string;

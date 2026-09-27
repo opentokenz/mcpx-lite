@@ -1,3 +1,5 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +11,55 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, 'fixtures', 'downstream-mcp.mjs');
 
 describe('真实 downstream MCP stdio', () => {
+  it.skipIf(process.platform !== 'win32')('启动含空格路径的 .cmd，并保留含空格与元字符的独立参数', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mini pi mcp-'));
+    const command = join(root, 'mcp server.cmd');
+    const argument = 'argument with spaces & ampersand';
+    await writeFile(command, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`, 'utf8');
+
+    const server: ResolvedMcpServer = {
+      name: 'cmd-fixture',
+      source: 'global',
+      transport: 'stdio',
+      command,
+      args: [argument],
+      env: {},
+      display: { command, args: [argument], env: [] },
+      hash: 'fixture-stdio-cmd',
+    };
+
+    try {
+      const connection = await createMcpConnection(server);
+      try {
+        expect(connection.info().serverInfo).toEqual({ name: argument, version: '1.0.0' });
+      } finally {
+        await connection.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('把 stdio 参数原样作为独立 argv 传给 server', async () => {
+    const server: ResolvedMcpServer = {
+      name: 'argv-fixture',
+      source: 'global',
+      transport: 'stdio',
+      command: process.execPath,
+      args: [fixture, 'argument with spaces', 'second-argument'],
+      env: {},
+      display: { command: process.execPath, args: [fixture, 'argument with spaces', 'second-argument'], env: [] },
+      hash: 'fixture-stdio-argv',
+    };
+
+    const connection = await createMcpConnection(server);
+    try {
+      expect(connection.info().serverInfo).toEqual({ name: 'argument with spaces', version: '1.0.0' });
+    } finally {
+      await connection.close();
+    }
+  });
+
   it('连接后可 inspect tools/resources/prompts，并透传 structured tool result', async () => {
     const server: ResolvedMcpServer = {
       name: 'fixture',

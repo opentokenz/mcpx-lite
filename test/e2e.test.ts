@@ -30,7 +30,7 @@ afterEach(async () => {
   await h.cleanup();
 });
 
-describe('export 工具（进程内）', () => {
+describe('fetch 工具（进程内）', () => {
   it('返回 resource_link + JSON（name / mimeType / size / url / expiresAt），URL 用请求 origin', async () => {
     await mkdir(join(h.workspace, 'dist'), { recursive: true });
     await writeFile(join(h.workspace, 'dist', 'report.pdf'), PDF_BYTES);
@@ -38,13 +38,16 @@ describe('export 工具（进程内）', () => {
     const created = expectOk(
       await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付产物', reason: '开始任务' }),
     );
-    const outcome = await h.callTool('export', {
+    const outcome = await h.callTool('fetch', {
       sessionId: created['sessionId'] as string,
       path: 'dist/report.pdf',
       goal: '把报告交给用户',
       reason: '产物需要下载',
     });
     const payload = expectOk(outcome) as Record<string, unknown>;
+
+    expect(outcome.resultType).toBe('complete');
+    expect(h.logs.join('\n')).not.toContain('fetch.outside-workspace');
 
     expect(payload['name']).toBe('report.pdf');
     expect(payload['mimeType']).toBe('application/pdf');
@@ -72,23 +75,23 @@ describe('export 工具（进程内）', () => {
       await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const sessionId = created['sessionId'] as string;
-    const exportFile = (args: Record<string, unknown>) =>
-      h.callTool('export', { sessionId, goal: '导出文件', reason: '需要原始文件', ...args });
-    const exportArgs = { sessionId, path: outside, goal: '导出文件', reason: '需要原始文件' };
+    const fetchFile = (args: Record<string, unknown>) =>
+      h.callTool('fetch', { sessionId, goal: '获取文件', reason: '需要原始文件', ...args });
+    const fetchArgs = { sessionId, path: outside, goal: '获取文件', reason: '需要原始文件' };
 
     // 首轮：只返回审核卡片/token，不签发任何下载链接
-    const gated = await h.callTool('export', exportArgs);
+    const gated = await h.callTool('fetch', fetchArgs);
     expect(expectApproval(gated).approvalToken).toMatch(/^apr_/);
-    expect(h.logs.join('\n')).toContain('export.outside-workspace');
+    expect(h.logs.join('\n')).toContain('fetch.outside-workspace');
     expect(h.logs.some((line) => line.includes('download-mint'))).toBe(false);
 
     // 确认后才签发链接
-    const confirmed = expectOk(await h.callToolApproving('export', exportArgs));
+    const confirmed = expectOk(await h.callToolApproving('fetch', fetchArgs));
     expect(confirmed['name']).toBe('outside-artifact.txt');
 
     // 目录 / 不存在的文件在确认之前就报错
-    expect(expectError(await exportFile({ path: 'adir' }))).toMatch(/not a regular file/);
-    expect(expectError(await exportFile({ path: 'nope.bin' }))).toMatch(/does not exist/);
+    expect(expectError(await fetchFile({ path: 'adir' }))).toMatch(/not a regular file/);
+    expect(expectError(await fetchFile({ path: 'nope.bin' }))).toMatch(/does not exist/);
   });
 
   it('delivery=base64：内联返回 embedded resource + 摘要，字节一致且不签发链接', async () => {
@@ -99,7 +102,7 @@ describe('export 工具（进程内）', () => {
     const created = expectOk(
       await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
-    const outcome = await h.callTool('export', {
+    const outcome = await h.callTool('fetch', {
       sessionId: created['sessionId'] as string,
       path: 'dist/inline.zip',
       delivery: 'base64',
@@ -147,7 +150,7 @@ describe('export 工具（进程内）', () => {
       await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const message = expectError(
-      await h.callTool('export', {
+      await h.callTool('fetch', {
         sessionId: created['sessionId'] as string,
         path: 'dist/big.bin',
         delivery: 'base64',
@@ -176,13 +179,13 @@ describe('export 工具（进程内）', () => {
       reason: '需要原始字节',
     };
 
-    const first = await h.callTool('export', args);
+    const first = await h.callTool('fetch', args);
 
     expectApproval(first);
     expect(first.text).not.toContain(bytes.toString('base64'));
-    expect(h.logs.join('\n')).toContain('export.outside-workspace');
+    expect(h.logs.join('\n')).toContain('fetch.outside-workspace');
 
-    const approved = await h.callToolApproving('export', args);
+    const approved = await h.callToolApproving('fetch', args);
     const embedded = approved.content?.[0] as { resource: { blob: string } } | undefined;
     expect(Buffer.from(embedded?.resource.blob ?? '', 'base64').toString()).toBe('SECRET-INLINE-BYTES');
   });
@@ -195,17 +198,17 @@ describe('export 工具（进程内）', () => {
       await h.callTool('session', { action: 'create', workspace: h.workspace, goal: '交付', reason: '开始任务' }),
     );
     const sessionId = created['sessionId'] as string;
-    const first = await h.callTool('export', { sessionId, path: outside, goal: '交付', reason: '需要文件' });
+    const first = await h.callTool('fetch', { sessionId, path: outside, goal: '交付', reason: '需要文件' });
     const token = expectApproval(first).approvalToken;
 
     const changed = { sessionId, path: outside, delivery: 'base64', goal: '交付', reason: '需要文件' };
-    const retry = toOutcome(await h.client.send(approvalRetryBody('export', changed, token)));
+    const retry = toOutcome(await h.client.send(approvalRetryBody('fetch', changed, token)));
 
     expect(retry.isError).toBe(true);
     expect(retry.text).toMatch(/不匹配/);
   });
 
-  it('二次确认允许 goal / reason 改变，只校验 export 业务参数', async () => {
+  it('二次确认允许 goal / reason 改变，只校验 fetch 业务参数', async () => {
     const outside = join(h.workspace, '..', 'outside-audit-fields.txt');
     await writeFile(outside, 'audit-fields', 'utf8');
 
@@ -219,14 +222,14 @@ describe('export 工具（进程内）', () => {
       goal: '首轮导出目标',
       reason: '首轮导出原因',
     };
-    const token = expectApproval(await h.callTool('export', firstArgs)).approvalToken;
+    const token = expectApproval(await h.callTool('fetch', firstArgs)).approvalToken;
 
     const retryArgs = {
       ...firstArgs,
       goal: '二次目标变化',
       reason: '二次原因变化',
     };
-    const retry = toOutcome(await h.client.send(approvalRetryBody('export', retryArgs, token)));
+    const retry = toOutcome(await h.client.send(approvalRetryBody('fetch', retryArgs, token)));
 
     expect(retry.isError).toBe(false);
     expect(retry.text).toContain('outside-audit-fields.txt');
@@ -239,12 +242,12 @@ describe('export 工具（进程内）', () => {
     );
     const sessionId = created['sessionId'] as string;
 
-    expectOk(await h.callTool('export', { sessionId, path: 'secret.bin', goal: '导出', reason: '需要原始文件' }));
+    expectOk(await h.callTool('fetch', { sessionId, path: 'secret.bin', goal: '获取', reason: '需要原始文件' }));
 
     const session = expectOk(await h.callTool('session', { action: 'get', sessionId, goal: 'g', reason: 'r' }));
     const history = session['history'] as Record<string, unknown>[];
 
-    expect(history[0]).toMatchObject({ tool: 'export', target: join(h.workspace, 'secret.bin'), ok: true });
+    expect(history[0]).toMatchObject({ tool: 'fetch', target: join(h.workspace, 'secret.bin'), ok: true });
     expect(JSON.stringify(history)).not.toContain('TOPSECRET-BYTES');
   });
 });
@@ -256,7 +259,7 @@ describe('真实 HTTP 端到端', () => {
     const tools = await server.client.listTools();
 
     expect(tools.map((tool) => tool.name).sort()).toEqual(
-      ['shell', 'export', 'edit', 'mcp_tool', 'read', 'session', 'skills', 'trash', 'write'].sort(),
+      ['shell', 'fetch', 'edit', 'mcp_tool', 'read', 'session', 'skills', 'trash', 'write'].sort(),
     );
     for (const tool of tools) {
       expect(tool.description).toMatch(/示例/);
@@ -271,14 +274,14 @@ describe('真实 HTTP 端到端', () => {
     }
   });
 
-  it('不再暴露 bash / download：旧名称按未知工具失败，且不产生副作用', async () => {
+  it('不再暴露 bash / download / export：旧名称按未知工具失败，且不产生副作用', async () => {
     server = await h.startHttpServer();
 
     const names = (await server.client.listTools()).map((tool) => tool.name);
     expect(names).not.toContain('bash');
     expect(names).not.toContain('download');
 
-    for (const legacy of ['bash', 'download']) {
+    for (const legacy of ['bash', 'download', 'export']) {
       const outcome = await server.client.callTool(legacy, { goal: 'g', reason: 'r' });
 
       expect(outcome.error?.code, legacy).toBe(-32602);
@@ -286,7 +289,7 @@ describe('真实 HTTP 端到端', () => {
     }
   });
 
-  it('session → write → shell → export → GET /files/:token 走完整链路，字节一致', async () => {
+  it('session → write → shell → fetch → GET /files/:token 走完整链路，字节一致', async () => {
     server = await h.startHttpServer();
     const client = server.client;
 
@@ -321,15 +324,15 @@ describe('真实 HTTP 端到端', () => {
     );
     expect((ran['stdout'] as string).trim()).toBe(String(Buffer.byteLength(HELLO)));
 
-    const exported = expectOk(
-      await client.callTool('export', {
+    const fetched = expectOk(
+      await client.callTool('fetch', {
         sessionId,
         path: 'dist/hello.txt',
         goal: '交付产物',
         reason: '远端需要拿到文件',
       }),
     );
-    const url = exported['url'] as string;
+    const url = fetched['url'] as string;
     expect(url.startsWith(server.origin)).toBe(true);
 
     const response = await fetch(url);
@@ -345,7 +348,7 @@ describe('真实 HTTP 端到端', () => {
     expect((session['history'] as unknown[]).map((entry) => (entry as { tool: string }).tool)).toEqual([
       'write',
       'shell',
-      'export',
+      'fetch',
     ]);
     expect(h.logs.some((line) => line.includes('download-mint') && line.includes('hello.txt'))).toBe(true);
     expect(h.logs.some((line) => line.includes('files-fetch') && line.includes('status=200'))).toBe(true);
@@ -358,17 +361,19 @@ describe('真实 HTTP 端到端', () => {
     await writeFile(join(h.workspace, 'dist', 'a.txt'), 'a\n', 'utf8');
 
     const created = expectOk(await client.callTool('session', { action: 'create', workspace: h.workspace, goal: 'g', reason: 'r' }));
-    const exported = expectOk(
-      await client.callTool('export', {
+    const fetched = expectOk(
+      await client.callTool('fetch', {
         sessionId: created['sessionId'] as string,
         path: 'dist/a.txt',
         goal: 'g',
         reason: 'r',
       }),
     );
-    const token = (exported['url'] as string).split('/files/')[1] ?? '';
+    const token = (fetched['url'] as string).split('/files/')[1] ?? '';
+    const tamperedToken = `${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`;
 
-    expect((await fetch(`${server.origin}/files/${token.slice(0, -1)}b`)).status).toBe(404);
+    expect(tamperedToken).not.toBe(token);
+    expect((await fetch(`${server.origin}/files/${tamperedToken}`)).status).toBe(404);
     expect((await fetch(`${server.origin}/files?path=/etc/passwd`)).status).toBe(404);
     expect((await fetch(`${server.origin}/nope`)).status).toBe(404);
     expect((await fetch(`${server.origin}/`)).status).toBe(404);
@@ -429,7 +434,7 @@ describe('真实 HTTP 端到端', () => {
     expect(loadConfig({ MINI_PI_MCP_LOG: 'off' }).logLevel).toBe('off');
   });
 
-  it('export 链接的 origin 优先取反向代理头（公网域名）', async () => {
+  it('fetch 链接的 origin 优先取反向代理头（公网域名）', async () => {
     server = await h.startHttpServer();
     const { origin, client } = server;
     await mkdir(join(h.workspace, 'dist'), { recursive: true });
@@ -441,7 +446,7 @@ describe('真实 HTTP 端到端', () => {
     const sessionId = created['sessionId'] as string;
 
     const callWithHeaders = async (extra: Record<string, string>) => {
-      const body = toolCallBody('export', {
+      const body = toolCallBody('fetch', {
         sessionId,
         path: 'dist/a.txt',
         goal: '交付产物',
@@ -476,7 +481,7 @@ describe('真实 HTTP 端到端', () => {
     expect(direct['url']).toContain('0.0.0.0');
 
     // 通配监听地址 + 推断不出对外地址 → 记一条告警，便于定位「客户端拿不到域名」
-    expect(h.logs.some((line) => line.includes('export-origin-warning'))).toBe(true);
+    expect(h.logs.some((line) => line.includes('fetch-origin-warning'))).toBe(true);
   });
 });
 
@@ -491,14 +496,19 @@ describe('真实 HTTP 端到端：安全确认（MRTR）', () => {
     const sessionId = created['sessionId'] as string;
 
     // safe fast path：不进入确认流程
-    const safe = await client.callTool('shell', { sessionId, command: 'pwd', goal: '验证现状', reason: 'r' });
+    const safeCommand = process.platform === 'win32' ? '[Console]::Out.Write((Get-Location).Path)' : 'pwd';
+    const safe = await client.callTool('shell', { sessionId, command: safeCommand, goal: '验证现状', reason: 'r' });
     expect(safe.resultType).not.toBe('input_required');
     expect(safe.isError).toBe(false);
     expect((expectOk(safe)['stdout'] as string).trim()).toBe(h.workspace);
 
     // 危险命令：首轮只拿到普通审核卡片/token，真实机器上没有任何副作用
     const gated = join(h.workspace, 'e2e-gated.txt');
-    const args = { sessionId, command: 'touch e2e-gated.txt', goal: '创建文件', reason: '验证门禁' };
+    const gatedCommand =
+      process.platform === 'win32'
+        ? `Set-Content -LiteralPath '${gated.replaceAll("'", "''")}' -Value 'created'`
+        : 'touch e2e-gated.txt';
+    const args = { sessionId, command: gatedCommand, goal: '创建文件', reason: '验证门禁' };
     const first = await client.callTool('shell', args);
     const token = expectApproval(first).approvalToken;
 

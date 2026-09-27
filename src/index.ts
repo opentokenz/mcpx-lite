@@ -1,7 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from '@modelcontextprotocol/node';
 import { createApprovalCodec } from './approval.js';
 import { DEFAULT_TTL_MS, TokenStore, createFilesRoute } from './downloads.js';
@@ -52,7 +51,7 @@ function header(value: string | string[] | undefined): string {
 /**
  * 一个端口同时提供两个入口：
  * - POST /mcp         → MCP 2026-07-28（Streamable HTTP）
- * - GET  /files/:token → export 工具签发的一次性文件链接
+ * - GET  /files/:token → fetch 工具签发的一次性文件链接
  * 其余路径 404。回环绑定启用 Host / Origin 校验，防止 DNS rebinding。
  */
 export function createHttpServer(deps: Deps): Server {
@@ -166,9 +165,4 @@ export async function main(): Promise<void> {
   });
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-}
-
-const entry = process.argv[1];
-if (entry && import.meta.url === pathToFileURL(entry).href) {
-  await main();
 }

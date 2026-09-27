@@ -1,3 +1,4 @@
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { displayWidth, stripAnsi } from '../src/ansi.js';
 import {
@@ -230,27 +231,29 @@ describe('工具 transcript', () => {
   });
 
   it('workspace 内文件路径显示相对路径，workspace 外保持绝对路径', () => {
+    const workspace = resolve('repo');
+    const outsidePath = resolve('tmp', 'log.ts');
     const inside = collector('debug');
     inside.logger.tool({
       id: 1,
       tool: 'read',
       phase: 'done',
-      target: '/repo/src/log.ts',
-      workspace: '/repo',
+      target: join(workspace, 'src', 'log.ts'),
+      workspace,
       fields: { session: 'ses_1', result: '1/1 lines' },
     });
-    expect(inside.plain[1]).toBe('• Read  src/log.ts');
+    expect(inside.plain[1]).toBe(`• Read  ${join('src', 'log.ts')}`);
 
     const outside = collector('debug');
     outside.logger.tool({
       id: 2,
       tool: 'read',
       phase: 'done',
-      target: '/tmp/log.ts',
-      workspace: '/repo',
+      target: outsidePath,
+      workspace,
       fields: { session: 'ses_1', result: '1/1 lines' },
     });
-    expect(outside.plain[1]).toBe('• Read  /tmp/log.ts');
+    expect(outside.plain[1]).toBe(`• Read  ${outsidePath}`);
   });
 
   it('session / goal / reason 始终展示，超宽时按字段行换行', () => {

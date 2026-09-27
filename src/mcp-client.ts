@@ -12,6 +12,7 @@ import {
 } from '@modelcontextprotocol/client/stdio';
 import type { ResolvedMcpServer } from './mcp-config.js';
 import type { ManagedMcpConnection } from './mcp-manager.js';
+import { buildWindowsBatchLaunch } from './windows-runtime.js';
 
 export interface McpClientAdapter {
   connect(transport: unknown): Promise<void>;
@@ -63,17 +64,20 @@ export async function createMcpConnection(
     inputRequired: { autoFulfill: false },
   });
 
-  const transport =
-    server.transport === 'stdio'
-      ? factory.createStdioTransport({
-          command: server.command,
-          args: server.args,
-          env: { ...factory.getDefaultEnvironment(), ...server.env },
-          stderr: 'pipe',
-        })
-      : factory.createHttpTransport(new URL(server.url), {
-          requestInit: { headers: server.headers },
-        });
+  let transport: unknown;
+  if (server.transport === 'stdio') {
+    const batchLaunch = buildWindowsBatchLaunch(server.command, server.args);
+    transport = factory.createStdioTransport({
+      command: batchLaunch?.command ?? server.command,
+      args: batchLaunch?.args ?? server.args,
+      env: { ...factory.getDefaultEnvironment(), ...server.env },
+      stderr: 'pipe',
+    });
+  } else {
+    transport = factory.createHttpTransport(new URL(server.url), {
+      requestInit: { headers: server.headers },
+    });
+  }
 
   await client.connect(transport);
 

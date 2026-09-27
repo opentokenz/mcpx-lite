@@ -293,7 +293,7 @@ export async function createHarness(
       await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
       const { port } = server.address() as AddressInfo;
       const origin = `http://127.0.0.1:${port}`;
-      // 让 config 反映真实监听端口：export 在无法从请求推断对外地址时会回退到它
+      // 让 config 反映真实监听端口：fetch 在无法从请求推断对外地址时会回退到它
       deps.config.port = port;
 
       return {

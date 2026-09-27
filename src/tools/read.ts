@@ -19,7 +19,7 @@ export const readSchema = withGoalReason({
 export const READ_DESCRIPTION = `读取文本文件内容（按行分页）。
 
 用途：在改代码前了解现状——确认实现、配置、日志、测试文件的内容。
-二进制文件（PDF / 图片 / ZIP 等）不能用本工具读取，请用 export。
+二进制文件（PDF / 图片 / ZIP 等）不能用本工具读取，请用 fetch。
 
 参数：
 - sessionId：必填
@@ -119,7 +119,7 @@ async function assertTextFile(path: string, size: number): Promise<void> {
   try {
     const buffer = Buffer.alloc(Math.min(SNIFF_BYTES, size));
     await handle.read(buffer, 0, buffer.length, 0);
-    if (buffer.includes(0)) throw new ToolError(`binary file (use export instead): ${path}`);
+    if (buffer.includes(0)) throw new ToolError(`binary file (use fetch instead): ${path}`);
   } finally {
     await handle.close();
   }

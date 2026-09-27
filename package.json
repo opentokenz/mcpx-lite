@@ -2,13 +2,16 @@
   "name": "mini-pi-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, mcp_tool, read, write, edit, trash, shell, export",
+  "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, mcp_tool, read, write, edit, trash, shell, fetch",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "tsx src/bin.ts",
+    "build:windows:x64": "bun build --compile --target=bun-windows-x64 --outfile dist/mini-pi-mcp-win-x64.exe src/bin.ts",
+    "build:windows:arm64": "bun build --compile --target=bun-windows-arm64 --outfile dist/mini-pi-mcp-win-arm64.exe src/bin.ts",
+    "build:windows": "pnpm build:windows:x64 && pnpm build:windows:arm64",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

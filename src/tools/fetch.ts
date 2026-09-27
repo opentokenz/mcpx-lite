@@ -9,7 +9,7 @@ import {
   hashArgs,
   type ApprovalCodec,
 } from '../approval.js';
-import { inspectExportable, mimeTypeFor, type TokenStore } from '../downloads.js';
+import { inspectFetchable, mimeTypeFor, type TokenStore } from '../downloads.js';
 import { ToolError } from '../errors.js';
 import type { Logger } from '../log.js';
 import { defineTool, describePath, withGoalReason } from '../registry.js';
@@ -18,7 +18,7 @@ import { isInsideWorkspace, resolvePath } from '../session.js';
 /** base64 内联传输的上限：超过就请用 link 模式，避免把大文件塞进 MCP 响应。 */
 const MAX_INLINE_BYTES = 1_048_576;
 
-export const exportSchema = withGoalReason({
+export const fetchSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
   path: z.string().min(1).describe('相对路径基于 session.workspace 解析；绝对路径直接使用；允许 ..'),
   delivery: z
@@ -28,7 +28,7 @@ export const exportSchema = withGoalReason({
   ...APPROVAL_INPUT_FIELDS,
 });
 
-export const EXPORT_DESCRIPTION = `把真实机器上的指定文件交给 MCP 调用方（原始字节，不经过模型上下文）。
+export const FETCH_DESCRIPTION = `把真实机器上的指定文件交给 MCP 调用方（原始字节，不经过模型上下文）。
 
 有两种交付方式（delivery）：
 - link（默认）：服务端只签发一个临时链接，实际下载由调用方通过该链接完成；
@@ -39,7 +39,7 @@ export const EXPORT_DESCRIPTION = `把真实机器上的指定文件交给 MCP �
 
 用途：需要拿到真实文件本身时——构建产物（zip / tar / apk）、PDF、图片、Excel / Word、音频、
 二进制数据、体量太大不适合读进上下文的日志或数据文件。
-要"看内容"请用 read（文本）；read 拒绝的二进制文件应该用 export。
+要"看内容"请用 read（文本）；read 拒绝的二进制文件应该用 fetch。
 
 参数：
 - sessionId：必填
@@ -52,7 +52,7 @@ export const EXPORT_DESCRIPTION = `把真实机器上的指定文件交给 MCP �
 - base64：embedded resource + 文件摘要，内联上限 1 MiB。
 
 workspace 边界门禁（服务端强制执行）：
-- workspace 内真实目标直接导出。
+- workspace 内真实目标直接获取。
 - workspace 外真实目标先返回 approval_required；确认前不读取内容、不签发链接。
 - 用户确认后用原 path / delivery 携带 approvalToken + approvalDecision=approve 重试。
 
@@ -60,7 +60,7 @@ workspace 边界门禁（服务端强制执行）：
 { "sessionId": "ses_ab12cd34ef56", "path": "dist/report.pdf" }
 { "sessionId": "ses_ab12cd34ef56", "path": "dist/plan.xlsx", "delivery": "base64" }`;
 
-export function createExportTool(deps: {
+export function createFetchTool(deps: {
   tokens: TokenStore;
   logger: Logger;
   config: { host: string; port: number };
@@ -69,10 +69,10 @@ export function createExportTool(deps: {
   const { tokens, logger, config, approvals } = deps;
 
   return defineTool({
-    name: 'export',
-    title: 'Export（导出文件）',
-    description: EXPORT_DESCRIPTION,
-    schema: exportSchema,
+    name: 'fetch',
+    title: 'Fetch（获取文件）',
+    description: FETCH_DESCRIPTION,
+    schema: fetchSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     requiresSession: true,
     describeCall: (args, session) => {
@@ -82,13 +82,13 @@ export function createExportTool(deps: {
         : info;
     },
     handler: async (args, ctx: ServerContext, session, observe) => {
-      if (!session) throw new ToolError('export 需要有效 sessionId');
+      if (!session) throw new ToolError('fetch 需要有效 sessionId');
 
       const absolute = resolvePath(session.workspace, args.path);
       const inline = args.delivery === 'base64';
 
       // 确认之前先做无副作用的前置检查，不让用户为一个不存在的文件（或超限的内联传输）确认
-      const info = await inspectExportable(absolute);
+      const info = await inspectFetchable(absolute);
       if (inline && info.size > MAX_INLINE_BYTES) {
         throw new ToolError(
           `file too large for inline base64: ${info.size} bytes (limit ${MAX_INLINE_BYTES}); use delivery=link`,
@@ -100,11 +100,11 @@ export function createExportTool(deps: {
         const approval = await enforceWorkspaceBoundary({
           codec: approvals,
           sessionId: session.id,
-          tool: 'export',
+          tool: 'fetch',
           argsHash: hashArgs([args.path, args.delivery]),
           ...(args.approvalToken ? { approvalToken: args.approvalToken } : {}),
           ...(args.approvalDecision ? { approvalDecision: args.approvalDecision } : {}),
-          action: '导出',
+          action: '获取',
           path: absolute,
           target,
           workspace: session.workspace,
@@ -143,9 +143,9 @@ export function createExportTool(deps: {
 
       // 用已确认的真实目标签发 token：确认后即使 symlink 被改写也不会换掉被授权的文件
       const record = await tokens.mint({ sessionId: session.id, path: target });
-      const requestOrigin = resolveRequestOrigin(ctx.http?.req);
+      const requestOrigin = resolveFetchOrigin(ctx.http?.req);
       if (!requestOrigin && isWildcardHost(config.host)) {
-        logger.event('export-origin-warning', {
+        logger.event('fetch-origin-warning', {
           host: config.host,
           message:
             '无法从请求推断对外地址，且监听地址是通配地址：请转发 Forwarded / X-Forwarded-Host，或把 MINI_PI_MCP_HOST 设为客户端可达地址',
@@ -204,7 +204,7 @@ export function createExportTool(deps: {
  * 注意：这些值来自请求头，即调用方自己提供的；单用户本地 runtime 下可以接受（客户端只会误导自己），
  * 但不应当把生成的 URL 当作可信来源转给第三方。
  */
-export function resolveRequestOrigin(req: { url?: string; headers?: Headers } | undefined): string | undefined {
+export function resolveFetchOrigin(req: { url?: string; headers?: Headers } | undefined): string | undefined {
   if (!req) return undefined;
 
   const forwarded = req.headers?.get('forwarded');

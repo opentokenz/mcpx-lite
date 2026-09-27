@@ -51,6 +51,16 @@ describe('write 工具', () => {
     expect(await readFile(join(h.workspace, 'a', 'b', 'c', 'new.ts'), 'utf8')).toBe('export const x = 1;\n');
   });
 
+  it('保留目录名与文件名中的空格', async () => {
+    const path = join('folder with spaces', 'file name.txt');
+    const target = join(h.workspace, path);
+
+    const result = expectOk(await write({ path, content: 'space-safe\n' }));
+
+    expect(result['path']).toBe(target);
+    expect(await readFile(target, 'utf8')).toBe('space-safe\n');
+  });
+
   it('覆盖已有文件时 created 为 false，内容按字节写入', async () => {
     await writeFile(join(h.workspace, 'existing.txt'), 'old', 'utf8');
 

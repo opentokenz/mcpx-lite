@@ -9,6 +9,10 @@ const smokeEnabled = process.env['MINI_PI_TRASH_SMOKE'] === '1';
 let dir: string | undefined;
 
 afterEach(async () => {
+  if (smokeEnabled && process.platform === 'win32') {
+    dir = undefined;
+    return;
+  }
   if (dir) await rm(dir, { recursive: true, force: true });
   dir = undefined;
 });

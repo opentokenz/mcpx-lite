@@ -1,9 +1,8 @@
 /**
- * Shell 命令风险分析：白名单 + fail closed。
+ * Shell 命令风险分析：识别只读命令与明确危险命令。
  *
- * 目标不是完整解释 Shell 语义，而是可靠识别高频安全路径（只读命令、项目验证脚本），
- * 其余一切（危险写操作、动态解释、复杂语法、未列入白名单的命令）都要求用户确认。
- * 因此这里只做保守的顶层拆分与 tokenise：任何无法静态证明安全的构造都判 unknown。
+ * 目标不是完整解释 Shell 语义；无法静态确认的构造和未列入规则的命令标记为 unknown，
+ * shell 工具只对 dangerous 要求审批。这里仅做保守的顶层拆分与 tokenise。
  */
 
 export type ShellRisk = 'safe' | 'dangerous' | 'unknown';
@@ -23,6 +22,8 @@ export interface ShellRiskAnalysis {
 }
 
 const MAX_FINDING_COMMAND = 200;
+/** ponytail: 限制不可信命令的递归分析深度；需要支持更深嵌套时改为显式栈。 */
+const MAX_SHELL_WRAPPER_DEPTH = 8;
 
 interface RiskRule {
   kind: string;
@@ -130,6 +131,28 @@ const DANGEROUS: Record<string, RiskRule> = {
   hdiutil: { kind: 'sys.disk', reason: '会挂载或转换磁盘映像' },
 };
 
+/** 明确要求审批的危险命令族；匹配解析后的可执行文件名开头。 */
+const DANGEROUS_COMMAND_PREFIXES: Record<string, RiskRule> = {
+  rm: DANGEROUS.rm,
+  mkfs: { kind: 'sys.disk', reason: '会格式化文件系统' },
+  wipefs: { kind: 'sys.disk', reason: '会擦除文件系统签名' },
+  srm: { kind: 'fs.rm', reason: '会安全删除文件' },
+  fdisk: { kind: 'sys.disk', reason: '会变更磁盘分区' },
+  sfdisk: { kind: 'sys.disk', reason: '会变更磁盘分区' },
+  parted: { kind: 'sys.disk', reason: '会变更磁盘分区' },
+  poweroff: { kind: 'sys.power', reason: '会关闭机器' },
+  pkexec: { kind: 'priv.sudo', reason: '会以更高权限执行命令' },
+  doas: { kind: 'priv.sudo', reason: '会以更高权限执行命令' },
+  iptables: { kind: 'sys.firewall', reason: '会修改防火墙规则' },
+  ip6tables: { kind: 'sys.firewall', reason: '会修改防火墙规则' },
+  nft: { kind: 'sys.firewall', reason: '会修改防火墙规则' },
+  chattr: { kind: 'fs.chmod', reason: '会修改文件属性' },
+  setfacl: { kind: 'fs.chmod', reason: '会修改文件访问控制列表' },
+  restart: { kind: 'sys.service', reason: '会重启系统或服务' },
+  shutdown: DANGEROUS.shutdown,
+  reboot: DANGEROUS.reboot,
+};
+
 /** 通过包管理器 / 构建工具 / 云 CLI 执行的命令：可能装依赖、发请求、改远端。 */
 const DANGEROUS_TOOLS: Record<string, RiskRule> = {
   npm: { kind: 'pkg.manage', reason: 'npm 会安装/发布依赖或执行任意脚本' },
@@ -177,7 +200,11 @@ const DANGEROUS_TOOLS: Record<string, RiskRule> = {
   '7z': { kind: 'archive.write', reason: '7z 会解包并覆盖文件' },
 };
 
-/** 解释器 / 包装器：可以执行任意代码，一律 unknown。 */
+/** 支持静态提取 `-c` 命令字符串的 shell 包装器。 */
+const SHELL_COMMAND_WRAPPERS = new Set(['bash', 'sh', 'zsh']);
+const SHELL_OPTIONS_WITH_ARGUMENTS = new Set(['-o', '-O', '--rcfile', '--init-file']);
+
+/** 其它解释器 / 包装器无法静态分析时标记为 unknown。 */
 const INTERPRETERS = new Set([
   'bash',
   'sh',
@@ -223,29 +250,14 @@ const GIT_SAFE: Record<string, RiskRule> = {
 };
 
 const GIT_DANGEROUS: Record<string, RiskRule> = {
-  add: { kind: 'git.add', reason: '会修改 Git 索引（暂存区）' },
   commit: { kind: 'git.commit', reason: '会创建本地 Git 提交' },
   push: { kind: 'git.push', reason: '会把提交推送到远端仓库' },
-  pull: { kind: 'git.pull', reason: '会从远端拉取并合并到当前分支' },
-  fetch: { kind: 'git.fetch', reason: '会访问远端并更新远端引用' },
   reset: { kind: 'git.reset', reason: '会移动分支指针并可能丢弃工作区/索引改动' },
   clean: { kind: 'git.clean', reason: '会删除未跟踪文件' },
-  rebase: { kind: 'git.rebase', reason: '会重写提交历史' },
-  merge: { kind: 'git.merge', reason: '会合并分支并修改工作区' },
-  checkout: { kind: 'git.checkout', reason: '会切换分支或覆盖工作区文件' },
   restore: { kind: 'git.restore', reason: '会覆盖工作区或索引文件' },
-  switch: { kind: 'git.switch', reason: '会切换分支并可能修改工作区' },
-  stash: { kind: 'git.stash', reason: '会保存或恢复工作区改动' },
-  tag: { kind: 'git.tag', reason: '会创建或删除 Git 标签' },
-  branch: { kind: 'git.branch', reason: '会创建或删除本地分支' },
   'cherry-pick': { kind: 'git.cherry-pick', reason: '会把提交应用到当前分支' },
   revert: { kind: 'git.revert', reason: '会创建反向提交' },
   am: { kind: 'git.am', reason: '会应用邮件补丁并修改工作区' },
-  apply: { kind: 'git.apply', reason: '会修改工作区或索引' },
-  config: { kind: 'git.config', reason: '会读写 Git 配置' },
-  clone: { kind: 'git.clone', reason: '会创建新的仓库目录' },
-  init: { kind: 'git.init', reason: '会初始化仓库并写文件' },
-  mv: { kind: 'git.mv', reason: '会移动 Git 跟踪的文件' },
   rm: { kind: 'git.rm', reason: '会删除 Git 跟踪的文件' },
   submodule: { kind: 'git.submodule', reason: '会修改子模块配置与目录' },
   worktree: { kind: 'git.worktree', reason: '会创建或删除工作树' },
@@ -256,12 +268,10 @@ const GIT_DANGEROUS: Record<string, RiskRule> = {
   repack: { kind: 'git.repack', reason: '会重写 Git 包文件' },
   'update-ref': { kind: 'git.update-ref', reason: '会更新 Git 引用' },
   'symbolic-ref': { kind: 'git.symbolic-ref', reason: '会更新 Git 引用' },
-  remote: { kind: 'git.remote', reason: '会修改远端配置' },
-  notes: { kind: 'git.notes', reason: '会修改 Git notes' },
-  replace: { kind: 'git.replace', reason: '会修改替换引用' },
-  'sparse-checkout': { kind: 'git.sparse-checkout', reason: '会修改稀疏检出配置与工作区' },
   maintenance: { kind: 'git.maintenance', reason: '会执行仓库维护并可能重写对象' },
 };
+
+const GIT_DANGEROUS_PREFIXES = Object.keys(GIT_DANGEROUS);
 
 /** 允许的 `pnpm <script>`：仅项目约定的只读验证脚本。 */
 const PNPM_SCRIPTS = new Set(['test', 'typecheck', 'lint']);
@@ -326,8 +336,18 @@ const READONLY_GUARDS: Array<{
  * 聚合规则：任一 dangerous → dangerous；否则任一 unknown → unknown；全部 safe → safe。
  */
 export function analyzeShellCommand(command: string): ShellRiskAnalysis {
+  return analyzeShellCommandAtDepth(command, 0);
+}
+
+function analyzeShellCommandAtDepth(command: string, wrapperDepth: number): ShellRiskAnalysis {
   const text = typeof command === 'string' ? command : '';
-  const findings = splitTopLevel(text).flatMap((segment) => analyzeSegment(segment));
+  const findings = splitTopLevel(text).flatMap(({ command: segment, background }) => {
+    const result = segment ? analyzeSegment(segment, wrapperDepth) : [];
+    if (background) {
+      result.push(finding(segment, 'shell.background', 'unknown', '后台执行无法静态确认安全'));
+    }
+    return result;
+  });
 
   if (findings.length === 0) {
     return { risk: 'unknown', findings: [finding(text.trim(), 'unknown', 'unknown', '空命令无法确认安全')] };
@@ -360,11 +380,11 @@ function finding(command: string, kind: string, risk: ShellRisk, reason: string)
 }
 
 /**
- * 顶层拆分：在未被引号包裹的位置按 `&&`、`||`、`;`、`|`、换行切分。
- * 不支持解析的构造不在这一层处理，留给逐段检查 fail closed。
+ * 顶层拆分：在未被引号包裹的位置按 `&&`、`||`、`&`、`;`、`|`、换行切分。
+ * 单个 `&` 标记前一段为后台命令；其它不支持的构造留给逐段检查。
  */
-function splitTopLevel(command: string): string[] {
-  const parts: string[] = [];
+function splitTopLevel(command: string): { command: string; background: boolean }[] {
+  const parts: { command: string; background: boolean }[] = [];
   let current = '';
   let quote: '"' | "'" | null = null;
   let index = 0;
@@ -401,21 +421,28 @@ function splitTopLevel(command: string): string[] {
     }
 
     if (char === '&' && command[index + 1] === '&') {
-      parts.push(current);
+      parts.push({ command: current, background: false });
       current = '';
       index += 2;
       continue;
     }
 
+    if (char === '&') {
+      parts.push({ command: current, background: true });
+      current = '';
+      index += 1;
+      continue;
+    }
+
     if (char === '|' && command[index + 1] === '|') {
-      parts.push(current);
+      parts.push({ command: current, background: false });
       current = '';
       index += 2;
       continue;
     }
 
     if (char === '|' || char === ';' || char === '\n') {
-      parts.push(current);
+      parts.push({ command: current, background: false });
       current = '';
       index += 1;
       continue;
@@ -425,21 +452,59 @@ function splitTopLevel(command: string): string[] {
     index += 1;
   }
 
-  parts.push(current);
-  return parts.map((part) => part.trim()).filter((part) => part.length > 0);
+  parts.push({ command: current, background: false });
+  return parts
+    .map((part) => ({ command: part.command.trim(), background: part.background }))
+    .filter((part) => part.command.length > 0 || part.background);
 }
 
-/** 单段判定：先排除无法静态解释的语法，再按白名单分类 token。 */
-function analyzeSegment(segment: string): ShellFinding[] {
+/** 危险命令优先识别，避免参数里的动态语法掩盖显式危险命令。 */
+function analyzeSegment(segment: string, wrapperDepth: number): ShellFinding[] {
+  const tokens = tokenize(segment);
+  if (tokens && tokens.length > 0) {
+    const commandName = tokens[0]!.slice(tokens[0]!.lastIndexOf('/') + 1);
+    const script = shellCommandArgument(commandName, tokens);
+    if (script !== null && wrapperDepth < MAX_SHELL_WRAPPER_DEPTH) {
+      const wrapped = analyzeShellCommandAtDepth(script, wrapperDepth + 1);
+      if (wrapped.risk === 'dangerous') return wrapped.findings;
+    }
+  }
+
+  const classified = tokens && tokens.length > 0 ? classifyShellCommand(segment, tokens) : null;
+  if (classified?.some((item) => item.risk === 'dangerous')) return classified;
+
   const syntax = detectUnsafeSyntax(segment);
   if (syntax) return [syntax];
 
-  const tokens = tokenize(segment);
-  if (!tokens || tokens.length === 0) {
-    return [finding(segment, 'shell.unparsable', 'unknown', '无法可靠解析此段命令')];
+  return classified ?? [finding(segment, 'shell.unparsable', 'unknown', '无法可靠解析此段命令')];
+}
+
+/** 提取 bash/sh/zsh 的 `-c` 命令字符串；不执行或展开该字符串。 */
+function shellCommandArgument(commandName: string, tokens: string[]): string | null {
+  if (!SHELL_COMMAND_WRAPPERS.has(commandName)) return null;
+
+  let index = 1;
+  while (index < tokens.length) {
+    const option = tokens[index]!;
+    if (option === '-c' || option === '--command') return tokens[index + 1] ?? null;
+    if (SHELL_OPTIONS_WITH_ARGUMENTS.has(option)) {
+      index += 2;
+      continue;
+    }
+    if (option === '--') return null;
+    if (option.startsWith('--')) {
+      index += 1;
+      continue;
+    }
+    if (option.startsWith('-')) {
+      if (option.slice(1).includes('c')) return tokens[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
+    return null;
   }
 
-  return classifyShellCommand(segment, tokens);
+  return null;
 }
 
 /** 无法静态解释的 Shell 构造：直接 unknown，不做任何「可能安全」的推断。 */
@@ -572,16 +637,28 @@ function tokenize(segment: string): string[] | null {
 
 function classifyShellCommand(segment: string, tokens: string[]): ShellFinding[] {
   const name = tokens[0]!;
+  const commandName = name.slice(name.lastIndexOf('/') + 1);
   const rest = tokens.slice(1);
 
   if (name.includes('=')) {
     return [finding(segment, 'shell.assignment', 'unknown', '变量赋值或环境变量前缀无法静态确认安全')];
   }
+
+  const prefixRule = Object.entries(DANGEROUS_COMMAND_PREFIXES).find(([prefix]) => commandName.startsWith(prefix))?.[1];
+  if (prefixRule) return [finding(segment, prefixRule.kind, 'dangerous', prefixRule.reason)];
+
+  const danger = DANGEROUS[commandName] ?? DANGEROUS_TOOLS[commandName];
+  if (danger) return [finding(segment, danger.kind, 'dangerous', danger.reason)];
+
+  if (commandName === 'git') {
+    const gitFinding = classifyGit(segment, rest);
+    if (!name.includes('/') || gitFinding.risk === 'dangerous') return [gitFinding];
+  }
+
   if (name.includes('/')) {
     return [finding(segment, 'shell.path', 'unknown', '非标准路径命令无法静态确认安全')];
   }
 
-  if (name === 'git') return [classifyGit(segment, rest)];
   if (name === 'pnpm') return [classifyPnpm(segment, rest)];
   if (name === 'vitest') return [classifyVitest(segment, rest)];
   if (name === 'tsc') return [classifyTsc(segment, rest)];
@@ -602,9 +679,6 @@ function classifyShellCommand(segment: string, tokens: string[]): ShellFinding[]
   const safe = SAFE_READONLY[name];
   if (safe) return [finding(segment, safe.kind, 'safe', safe.reason)];
 
-  const danger = DANGEROUS[name] ?? DANGEROUS_TOOLS[name];
-  if (danger) return [finding(segment, danger.kind, 'dangerous', danger.reason)];
-
   if (INTERPRETERS.has(name)) return [finding(segment, UNKNOWN_INTERPRETER.kind, 'unknown', UNKNOWN_INTERPRETER.reason)];
 
   return [finding(segment, UNKNOWN_UNLISTED.kind, 'unknown', UNKNOWN_UNLISTED.reason)];
@@ -612,6 +686,7 @@ function classifyShellCommand(segment: string, tokens: string[]): ShellFinding[]
 
 function classifyGit(segment: string, rest: string[]): ShellFinding {
   const sub = rest[0];
+  const args = rest.slice(1);
 
   if (!sub || sub.startsWith('-')) {
     return finding(segment, 'git.unresolved', 'unknown', '缺少可识别的 Git 子命令（或使用了全局参数），无法确认安全');
@@ -626,8 +701,36 @@ function classifyGit(segment: string, rest: string[]): ShellFinding {
     return finding(segment, safe.kind, 'safe', safe.reason);
   }
 
-  const danger = GIT_DANGEROUS[sub];
-  if (danger) return finding(segment, danger.kind, 'dangerous', danger.reason);
+  if (
+    sub === 'checkout' &&
+    args.some((arg) => ['--', '-f', '--force', '-B', '-m', '--merge', '-p', '--patch', '--ours', '--theirs'].includes(arg))
+  ) {
+    return finding(segment, 'git.checkout.restore', 'dangerous', '会覆盖或丢弃工作区文件中的本地修改');
+  }
+  if (sub === 'switch' && args.some((arg) => ['-f', '--force', '-C', '--discard-changes'].includes(arg))) {
+    return finding(segment, 'git.switch.discard', 'dangerous', '会覆盖或丢弃工作区文件中的本地修改');
+  }
+  if (sub === 'stash' && ['drop', 'clear'].includes(args[0] ?? '')) {
+    return finding(segment, 'git.stash.delete', 'dangerous', '会删除 stash 中保存的工作区改动');
+  }
+  if (sub === 'branch' && args.some((arg) => ['-D', '-f', '-M', '--force'].includes(arg))) {
+    return finding(segment, 'git.branch.force-delete', 'dangerous', '可能丢失未合并分支的提交引用');
+  }
+  if (sub === 'tag' && args.some((arg) => ['-f', '--force'].includes(arg))) {
+    return finding(segment, 'git.tag.force-update', 'dangerous', '会覆盖现有标签引用');
+  }
+  if (sub === 'mv' && args.some((arg) => ['-f', '--force'].includes(arg))) {
+    return finding(segment, 'git.mv.overwrite', 'dangerous', '会覆盖目标文件');
+  }
+  if (sub === 'apply' && args.includes('--unsafe-paths')) {
+    return finding(segment, 'git.apply.unsafe-paths', 'dangerous', '允许补丁写入仓库目录之外的路径');
+  }
+
+  const dangerousPrefix = GIT_DANGEROUS_PREFIXES.find((prefix) => sub.startsWith(prefix));
+  if (dangerousPrefix) {
+    const danger = GIT_DANGEROUS[dangerousPrefix]!;
+    return finding(segment, danger.kind, 'dangerous', danger.reason);
+  }
 
   return finding(segment, 'git.unresolved', 'unknown', `git ${sub} 不在只读白名单内，无法确认安全`);
 }

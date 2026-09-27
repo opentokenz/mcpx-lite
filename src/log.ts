@@ -60,7 +60,7 @@ const TOOL_VERBS: Record<string, string> = {
   edit: 'Edited',
   trash: 'Trashed',
   shell: 'Ran',
-  export: 'Exported',
+  fetch: 'Fetched',
 };
 
 const AUDIT_KEYS = new Set(['session', 'goal', 'reason']);
@@ -78,7 +78,7 @@ const TOOL_COLORS: Record<string, string> = {
   edit: '32',
   trash: '38;5;160',
   shell: '38;5;208',
-  export: '38;5;141',
+  fetch: '38;5;141',
 };
 
 /** 需要渲染结果块的阶段；`call` / `approved` / `declined` 只占一行。 */

@@ -13,7 +13,7 @@ import { createMcpTool } from './tools/mcp-tool.js';
 import { createSessionTool } from './tools/session.js';
 import { createSkillsTool } from './tools/skills.js';
 import { createShellTool } from './tools/shell.js';
-import { createExportTool } from './tools/export.js';
+import { createFetchTool } from './tools/fetch.js';
 import { createEditTool } from './tools/edit.js';
 import { readTool } from './tools/read.js';
 import { createWriteTool } from './tools/write.js';
@@ -51,7 +51,7 @@ export function createTools(deps: Deps): ToolDef[] {
     createTrashTool(deps.approvals, deps.trashBackend),
     createEditTool(deps.approvals),
     createShellTool(deps.approvals),
-    createExportTool({
+    createFetchTool({
       tokens: deps.downloads,
       logger: deps.logger,
       config: deps.config,

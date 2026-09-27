@@ -100,7 +100,7 @@ describe('tools/list', () => {
       destructiveHint: true,
       openWorldHint: true,
     });
-    expect(tools['export']?.annotations).toMatchObject({
+    expect(tools['fetch']?.annotations).toMatchObject({
       readOnlyHint: true,
       destructiveHint: false,
       openWorldHint: false,
@@ -356,10 +356,12 @@ describe('history 与终端日志', () => {
     expect(flat).toContain('1/1lines');
     expect(flat).not.toContain(secret);
 
+    const outputCommand =
+      process.platform === 'win32' ? "Write-Output 'alpha'; Write-Output 'beta'" : "printf 'alpha\\nbeta\\n'";
     expectOk(
       await h.callTool('shell', {
         sessionId,
-        command: "printf 'alpha\\nbeta\\n'",
+        command: outputCommand,
         goal: '查看输出',
         reason: '确认 stdout 预览',
       }),
