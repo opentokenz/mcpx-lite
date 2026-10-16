@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayWidth, padToWidth, stripAnsi, truncateToWidth, wrapToWidth } from '../src/ansi.js';
+import { displayWidth, stripAnsi, truncateToWidth, wrapToWidth } from '../src/ansi.js';
 
 const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
@@ -62,14 +62,6 @@ describe('wrapToWidth', () => {
 
     expect(lines).toEqual([`${BOLD}abc`, `def${RESET}`]);
     expect(lines.map(displayWidth)).toEqual([3, 3]);
-  });
-});
-
-describe('padToWidth', () => {
-  it('按可见宽度补齐，ANSI 不计入', () => {
-    expect(padToWidth('ab', 5)).toBe('ab   ');
-    expect(displayWidth(padToWidth(`${BOLD}ab${RESET}`, 5))).toBe(5);
-    expect(padToWidth('abcdef', 3)).toBe('abcdef');
   });
 });
 

@@ -78,13 +78,15 @@ interface StoredApproval {
  * 服务重启后 token 自然失效，TTL 默认 10 分钟。
  */
 export interface ApprovalCodec {
+  readonly enabled: boolean;
   mint(state: ApprovalState): Promise<string>;
   verify(token: string): Promise<ApprovalState>;
   consume(token: string): Promise<ApprovalState>;
 }
 
-export function createApprovalCodec(opts: { ttlSeconds?: number } = {}): ApprovalCodec {
+export function createApprovalCodec(opts: { ttlSeconds?: number; enabled?: boolean } = {}): ApprovalCodec {
   const ttlMs = (opts.ttlSeconds ?? 600) * 1000;
+  const enabled = opts.enabled ?? true;
   const tokens = new Map<string, StoredApproval>();
 
   function lookup(token: string): StoredApproval {
@@ -97,6 +99,7 @@ export function createApprovalCodec(opts: { ttlSeconds?: number } = {}): Approva
   }
 
   return {
+    enabled,
     async mint(state) {
       let token: string;
       do {
@@ -165,6 +168,8 @@ export async function enforceApproval(opts: {
     prompt,
     observer,
   } = opts;
+
+  if (!codec.enabled) return null;
 
   if (!approvalToken) {
     const token = await codec.mint({

@@ -7,7 +7,7 @@ import { commitPreparedEdits, prepareBatchEdits } from '../src/edit-batch.js';
 let dir: string;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'mini-pi-edit-batch-'));
+  dir = await mkdtemp(join(tmpdir(), 'mcpx-lite-edit-batch-'));
 });
 
 afterEach(async () => {

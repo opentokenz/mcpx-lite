@@ -17,7 +17,7 @@ jobs:
       - uses: pnpm/setup@v3
         with:
           version: 12.5.1
-          runtime: node@22
+          runtime: node@24
           cache: true
           require-lockfile: true
       - uses: oven-sh/setup-bun@v2
@@ -29,5 +29,5 @@ jobs:
       - name: Smoke test packaged x64 executable
         shell: pwsh
         run: |
-          $env:MINI_PI_MCP_BINARY = (Resolve-Path "dist/mini-pi-mcp-win-x64.exe").Path
+          $env:MCPX_LITE_BINARY = (Resolve-Path "dist/mcpx-lite-win-x64.exe").Path
           pnpm vitest run test/server-startup.test.ts

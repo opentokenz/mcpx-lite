@@ -13,7 +13,7 @@ import { inspectFetchable, mimeTypeFor, type TokenStore } from '../downloads.js'
 import { ToolError } from '../errors.js';
 import type { Logger } from '../log.js';
 import { defineTool, describePath, withGoalReason } from '../registry.js';
-import { isInsideWorkspace, resolvePath } from '../session.js';
+import { isPathWithin, resolvePath } from '../session.js';
 
 /** base64 内联传输的上限：超过就请用 link 模式，避免把大文件塞进 MCP 响应。 */
 const MAX_INLINE_BYTES = 1_048_576;
@@ -96,7 +96,7 @@ export function createFetchTool(deps: {
       }
 
       const target = await realpath(absolute);
-      if (!isInsideWorkspace(session.workspace, target)) {
+      if (!isPathWithin(session.workspace, target)) {
         const approval = await enforceWorkspaceBoundary({
           codec: approvals,
           sessionId: session.id,
@@ -148,7 +148,7 @@ export function createFetchTool(deps: {
         logger.event('fetch-origin-warning', {
           host: config.host,
           message:
-            '无法从请求推断对外地址，且监听地址是通配地址：请转发 Forwarded / X-Forwarded-Host，或把 MINI_PI_MCP_HOST 设为客户端可达地址',
+            '无法从请求推断对外地址，且监听地址是通配地址：请转发 Forwarded / X-Forwarded-Host，或把 MCPX_LITE_HOST 设为客户端可达地址',
         });
       }
       const url = `${requestOrigin ?? `http://${config.host}:${config.port}`}/files/${record.token}`;

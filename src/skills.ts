@@ -18,6 +18,10 @@ export interface SkillContent {
   truncated: boolean;
 }
 
+export function skillMetadata(skills: SkillMeta[]): Pick<SkillMeta, 'name' | 'description' | 'source'>[] {
+  return skills.map(({ name, description, source }) => ({ name, description, source }));
+}
+
 const SKILL_FILE = 'SKILL.md';
 export const SKILLS_SUBDIR = join('.agents', 'skills');
 

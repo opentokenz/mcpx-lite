@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createShutdownHandler } from '../src/index.js';
 
-describe('mini-pi runtime shutdown', () => {
+describe('mcpx-lite runtime shutdown', () => {
   it('先关闭 downstream MCP manager，再关闭 HTTP server，最后退出', async () => {
     const events: string[] = [];
     const shutdown = createShutdownHandler({

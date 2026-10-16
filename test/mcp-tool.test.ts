@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { McpConnection } from '../src/mcp-client.js';
+import { loadMcpConfig, resolveMcpServerConfig } from '../src/mcp-config.js';
 import { McpManager } from '../src/mcp-manager.js';
 import {
   approvalRetryBody,
@@ -285,6 +286,44 @@ describe('mcp_tool catalog actions', () => {
     expect(outcome.content).toContainEqual({ type: 'text', text: 'unannotated:x' });
   });
 
+  it('session close 释放下游连接并清除信任，resume 后重新要求 call 审批', async () => {
+    await writeJson(join(h.home, '.agents', 'mcp.json'), {
+      mcpServers: {
+        fixture: { command: process.execPath, args: [fixture] },
+      },
+    });
+    const sessionId = await createSession();
+    const effective = await loadMcpConfig({ workspace: h.workspace, globalPath: h.deps.mcpGlobalPath });
+    const resolved = resolveMcpServerConfig(effective.servers['fixture']!);
+    const args = {
+      action: 'call',
+      sessionId,
+      server: 'fixture',
+      name: 'unannotated',
+      arguments: { value: 'before-close' },
+    };
+
+    const approval = expectApproval(await h.callTool('mcp_tool', args));
+    const completed = toOutcome(
+      await h.client.send(approvalRetryBody('mcp_tool', args, approval.approvalToken)),
+    );
+    expect(completed.isError).toBe(false);
+    expect(h.deps.mcpManager.status(resolved).state).toBe('connected');
+    expect(h.deps.mcpTrust.isCallsTrusted(sessionId, 'fixture', resolved.hash)).toBe(true);
+
+    expectOk(await h.callTool('session', { action: 'close', sessionId }));
+
+    expect(h.deps.mcpManager.status(resolved).state).toBe('disconnected');
+    expect(h.deps.mcpTrust.isCallsTrusted(sessionId, 'fixture', resolved.hash)).toBe(false);
+
+    expectOk(await h.callTool('session', { action: 'resume', sessionId }));
+    expectApproval(
+      await h.callTool('mcp_tool', {
+        ...args,
+        arguments: { value: 'after-resume' },
+      }),
+    );
+  });
 
   it('call 透传 downstream input_required，并 byte-exact 回送 requestState/inputResponses', async () => {
     await writeJson(join(h.home, '.agents', 'mcp.json'), {

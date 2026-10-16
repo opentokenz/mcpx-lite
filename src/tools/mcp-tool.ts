@@ -3,9 +3,11 @@ import {
   APPROVAL_INPUT_FIELDS,
   enforceApproval,
   hashArgs,
+  isApprovalRequiredResult,
   type ApprovalCodec,
+  type ApprovalRequiredResult,
 } from '../approval.js';
-import { ToolError } from '../errors.js';
+import { errorMessage, ToolError } from '../errors.js';
 import {
   loadMcpConfig,
   resolveMcpServerConfig,
@@ -116,7 +118,7 @@ export function createMcpTool(deps: {
                   return {
                     ...displayServer(server),
                     state: 'failed',
-                    error: error instanceof Error ? error.message : String(error),
+                    error: errorMessage(error),
                   };
                 }
               }),
@@ -131,21 +133,18 @@ export function createMcpTool(deps: {
         }
 
         case 'inspect': {
-          const server = requireServer(config.servers, args.server);
-          const resolved = resolveMcpServerConfig(server);
-          const approval = await ensureProjectConnectionApproved({
-            server,
-            resolved,
+          const prepared = await getApprovedConnection({
+            server: requireServer(config.servers, args.server),
             sessionId: session.id,
+            manager,
             trust,
             approvals,
             approvalToken: args.approvalToken,
             approvalDecision: args.approvalDecision,
             observe,
           });
-          if (approval) return approval;
-
-          const connection = await manager.get(session.id, resolved);
+          if (isApprovalRequiredResult(prepared)) return prepared;
+          const { server, connection } = prepared;
           const info = connection.info();
           const [toolsResult, resourcesResult, templatesResult, promptsResult] = await Promise.all([
             hasCapability(info.capabilities, 'tools')
@@ -175,34 +174,23 @@ export function createMcpTool(deps: {
         case 'call': {
           const server = requireServer(config.servers, args.server);
           if (!args.name) throw new ToolError('mcp_tool call 需要 name');
-          const resolved = resolveMcpServerConfig(server);
-          const projectConnectionUntrusted =
-            server.source === 'project' && !trust.isTrusted(session.id, resolved.hash);
-          const connectApproval = await ensureProjectConnectionApproved({
+          const prepared = await getApprovedConnection({
             server,
-            resolved,
             sessionId: session.id,
+            manager,
             trust,
             approvals,
             approvalToken: args.approvalToken,
             approvalDecision: args.approvalDecision,
             observe,
-            ...(projectConnectionUntrusted
-              ? {
-                  firstCall: {
-                    name: args.name,
-                    ...(args.arguments ? { arguments: args.arguments } : {}),
-                  },
-                }
-              : {}),
+            firstCall: {
+              name: args.name,
+              ...(args.arguments ? { arguments: args.arguments } : {}),
+            },
           });
-          if (connectApproval) return connectApproval;
-          // 项目连接审批已经包含首次 call 的工具与参数，避免连续弹两张审批卡。
-          if (projectConnectionUntrusted) {
-            trust.trustCalls(session.id, server.name, resolved.hash);
-          }
+          if (isApprovalRequiredResult(prepared)) return prepared;
+          const { resolved, connection } = prepared;
 
-          const connection = await manager.get(session.id, resolved);
           const tools = arrayField(await connection.client.listTools(), 'tools');
           const tool = tools.find(
             (value) =>
@@ -271,27 +259,26 @@ export function createMcpTool(deps: {
         }
 
         case 'read_resource': {
-          const server = requireServer(config.servers, args.server);
-          const resolved = resolveMcpServerConfig(server);
-          const connectApproval = await ensureProjectConnectionApproved({
-            server,
-            resolved,
+          const prepared = await getApprovedConnection({
+            server: requireServer(config.servers, args.server),
             sessionId: session.id,
+            manager,
             trust,
             approvals,
             approvalToken: args.approvalToken,
             approvalDecision: args.approvalDecision,
             observe,
+            beforeConnect: () => {
+              if (!args.uri) throw new ToolError('mcp_tool read_resource 需要 uri');
+            },
           });
-          if (connectApproval) return connectApproval;
-          if (!args.uri) throw new ToolError('mcp_tool read_resource 需要 uri');
-
-          const connection = await manager.get(session.id, resolved);
+          if (isApprovalRequiredResult(prepared)) return prepared;
+          const { connection } = prepared;
           const requestState = ctx.mcpReq.requestState<string>();
           const inputResponses = ctx.mcpReq.inputResponses;
           return connection.client.readResource(
             {
-              uri: args.uri,
+              uri: args.uri!,
               ...(inputResponses ? { inputResponses } : {}),
               ...(requestState !== undefined ? { requestState } : {}),
             },
@@ -300,27 +287,26 @@ export function createMcpTool(deps: {
         }
 
         case 'get_prompt': {
-          const server = requireServer(config.servers, args.server);
-          const resolved = resolveMcpServerConfig(server);
-          const connectApproval = await ensureProjectConnectionApproved({
-            server,
-            resolved,
+          const prepared = await getApprovedConnection({
+            server: requireServer(config.servers, args.server),
             sessionId: session.id,
+            manager,
             trust,
             approvals,
             approvalToken: args.approvalToken,
             approvalDecision: args.approvalDecision,
             observe,
+            beforeConnect: () => {
+              if (!args.name) throw new ToolError('mcp_tool get_prompt 需要 name');
+            },
           });
-          if (connectApproval) return connectApproval;
-          if (!args.name) throw new ToolError('mcp_tool get_prompt 需要 name');
-
-          const connection = await manager.get(session.id, resolved);
+          if (isApprovalRequiredResult(prepared)) return prepared;
+          const { connection } = prepared;
           const requestState = ctx.mcpReq.requestState<string>();
           const inputResponses = ctx.mcpReq.inputResponses;
           return connection.client.getPrompt(
             {
-              name: args.name,
+              name: args.name!,
               ...(args.arguments ? { arguments: args.arguments } : {}),
               ...(inputResponses ? { inputResponses } : {}),
               ...(requestState !== undefined ? { requestState } : {}),
@@ -337,6 +323,39 @@ export function createMcpTool(deps: {
 }
 
 
+async function getApprovedConnection(opts: {
+  server: EffectiveMcpServer;
+  sessionId: string;
+  manager: McpManager<McpConnection>;
+  trust: McpTrustStore;
+  approvals: ApprovalCodec;
+  approvalToken?: string;
+  approvalDecision?: 'approve' | 'cancel';
+  observe?: Parameters<typeof enforceApproval>[0]['observer'];
+  firstCall?: { name: string; arguments?: Record<string, unknown> };
+  beforeConnect?: () => void;
+}): Promise<ApprovalRequiredResult | { server: EffectiveMcpServer; resolved: ResolvedMcpServer; connection: McpConnection }> {
+  const { server, sessionId, manager, trust, approvals, approvalToken, approvalDecision, observe, firstCall } = opts;
+  const resolved = resolveMcpServerConfig(server);
+  const projectConnectionUntrusted = server.source === 'project' && !trust.isTrusted(sessionId, resolved.hash);
+  const approval = await ensureProjectConnectionApproved({
+    server,
+    resolved,
+    sessionId,
+    trust,
+    approvals,
+    ...(approvalToken ? { approvalToken } : {}),
+    ...(approvalDecision ? { approvalDecision } : {}),
+    ...(observe ? { observe } : {}),
+    ...(projectConnectionUntrusted && firstCall ? { firstCall } : {}),
+  });
+  if (approval) return approval;
+
+  if (projectConnectionUntrusted && firstCall) trust.trustCalls(sessionId, server.name, resolved.hash);
+  opts.beforeConnect?.();
+
+  return { server, resolved, connection: await manager.get(sessionId, resolved) };
+}
 
 function requireServer(
   servers: Record<string, EffectiveMcpServer>,

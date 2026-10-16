@@ -10,10 +10,10 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const installScript = join(projectRoot, 'install.sh');
 
 const targets = [
-  { os: 'Darwin', arch: 'x86_64', build: 'build:macos:x64', artifact: 'mini-pi-mcp-macos-x64' },
-  { os: 'Darwin', arch: 'arm64', build: 'build:macos:arm64', artifact: 'mini-pi-mcp-macos-arm64' },
-  { os: 'Linux', arch: 'x86_64', build: 'build:linux:x64', artifact: 'mini-pi-mcp-linux-x64' },
-  { os: 'Linux', arch: 'aarch64', build: 'build:linux:arm64', artifact: 'mini-pi-mcp-linux-arm64' },
+  { os: 'Darwin', arch: 'x86_64', build: 'build:macos:x64', artifact: 'mcpx-lite-macos-x64' },
+  { os: 'Darwin', arch: 'arm64', build: 'build:macos:arm64', artifact: 'mcpx-lite-macos-arm64' },
+  { os: 'Linux', arch: 'x86_64', build: 'build:linux:x64', artifact: 'mcpx-lite-linux-x64' },
+  { os: 'Linux', arch: 'aarch64', build: 'build:linux:arm64', artifact: 'mcpx-lite-linux-arm64' },
 ] as const;
 
 describe.skipIf(process.platform === 'win32')('本地二进制安装脚本', () => {
@@ -25,7 +25,7 @@ describe.skipIf(process.platform === 'win32')('本地二进制安装脚本', () 
         expect(result.status, result.stderr).toBe(0);
         expect(await readFile(fixture.pnpmLog, 'utf8')).toBe(`run ${target.build}\n`);
 
-        const installed = join(fixture.home, '.local', 'bin', 'mini-pi-mcp');
+        const installed = join(fixture.home, '.local', 'bin', 'mcpx-lite');
         expect(await readFile(installed, 'utf8')).toBe(`built ${target.build}\n`);
         await expect(access(installed, constants.X_OK)).resolves.toBeUndefined();
       } finally {
@@ -39,14 +39,14 @@ describe.skipIf(process.platform === 'win32')('本地二进制安装脚本', () 
     try {
       const binDir = join(fixture.home, '.local', 'bin');
       await mkdir(binDir, { recursive: true });
-      await writeFile(join(binDir, 'mini-pi-mcp'), 'existing binary\n', 'utf8');
+      await writeFile(join(binDir, 'mcpx-lite'), 'existing binary\n', 'utf8');
 
       const result = fixture.run();
 
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('Unsupported platform');
       await expect(readFile(fixture.pnpmLog, 'utf8')).rejects.toThrow();
-      expect(await readFile(join(binDir, 'mini-pi-mcp'), 'utf8')).toBe('existing binary\n');
+      expect(await readFile(join(binDir, 'mcpx-lite'), 'utf8')).toBe('existing binary\n');
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -54,7 +54,7 @@ describe.skipIf(process.platform === 'win32')('本地二进制安装脚本', () 
 });
 
 async function createFixture(os: string, arch: string) {
-  const root = await mkdtemp(join(tmpdir(), 'mini-pi-install-'));
+  const root = await mkdtemp(join(tmpdir(), 'mcpx-lite-install-'));
   const fakeBin = join(root, 'bin');
   const home = join(root, 'home');
   const pnpmLog = join(root, 'pnpm.log');
@@ -72,10 +72,10 @@ async function createFixture(os: string, arch: string) {
       '#!/bin/sh',
       'printf "%s\\n" "$*" > "$INSTALL_TEST_PNPM_LOG"',
       'case "$2" in',
-      '  build:macos:x64) artifact=mini-pi-mcp-macos-x64 ;;',
-      '  build:macos:arm64) artifact=mini-pi-mcp-macos-arm64 ;;',
-      '  build:linux:x64) artifact=mini-pi-mcp-linux-x64 ;;',
-      '  build:linux:arm64) artifact=mini-pi-mcp-linux-arm64 ;;',
+      '  build:macos:x64) artifact=mcpx-lite-macos-x64 ;;',
+      '  build:macos:arm64) artifact=mcpx-lite-macos-arm64 ;;',
+      '  build:linux:x64) artifact=mcpx-lite-linux-x64 ;;',
+      '  build:linux:arm64) artifact=mcpx-lite-linux-arm64 ;;',
       '  *) exit 3 ;;',
       'esac',
       'mkdir -p "$INSTALL_TEST_ROOT/dist"',

@@ -91,7 +91,7 @@ describe.skipIf(process.platform === 'win32')('shell 工具（Bash）', () => {
 
     const outsideWrite = expectOk(
       await shellApproved({
-        command: `sh -c 'echo outside > ${tmpdir()}/mini-pi-outside.txt' && cat ${tmpdir()}/mini-pi-outside.txt`,
+        command: `sh -c 'echo outside > ${tmpdir()}/mcpx-lite-outside.txt' && cat ${tmpdir()}/mcpx-lite-outside.txt`,
       }),
     );
     expect(outsideWrite['stdout']).toBe('outside\n');
@@ -181,6 +181,37 @@ describe.skipIf(process.platform === 'win32')('shell 工具（Bash）', () => {
 });
 
 describe.skipIf(process.platform === 'win32')('shell 风险门禁（审核卡片 + token，Bash）', () => {
+  it('全局关闭审批后危险命令首次调用直接执行', async () => {
+    const disabled = await createHarness({ approvalsEnabled: false });
+    try {
+      const created = expectOk(
+        await disabled.callTool('session', {
+          action: 'create',
+          workspace: disabled.workspace,
+          goal: '关闭审批',
+          reason: '验证危险命令直接执行',
+        }),
+      );
+      const disabledSessionId = created['sessionId'] as string;
+      expect(created['instructions']).toContain('审批已关闭');
+      expect(created['instructions']).not.toMatch(/必须让用户选择|先向用户说明/);
+      const target = join(disabled.workspace, 'no-approval.txt');
+
+      const outcome = await disabled.callTool('shell', {
+        sessionId: disabledSessionId,
+        command: 'touch no-approval.txt',
+        goal: '执行命令',
+        reason: '验证关闭审批',
+      });
+
+      expect(outcome.data).not.toMatchObject({ resultType: 'approval_required' });
+      expect(expectOk(outcome)['exitCode']).toBe(0);
+      await expect(access(target)).resolves.toBeUndefined();
+    } finally {
+      await disabled.cleanup();
+    }
+  });
+
   it('危险命令首次调用返回普通 approval_required 审核卡片且不产生副作用', async () => {
     const target = join(h.workspace, 'gated.txt');
     const outcome = await shell({ command: 'touch gated.txt' });

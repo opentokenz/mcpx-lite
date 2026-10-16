@@ -1,22 +1,22 @@
 {
-  "name": "mini-pi-mcp",
+  "name": "mcpx-lite",
   "version": "0.1.0",
   "private": true,
   "description": "Minimal model-free coding runtime over MCP 2026-07-28 (Streamable HTTP): session, skills, mcp_tool, read, write, edit, trash, shell, fetch",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "start": "tsx src/bin.ts",
-    "build:macos:x64": "bun build --compile --target=bun-darwin-x64 --outfile dist/mini-pi-mcp-macos-x64 src/bin.ts",
-    "build:macos:arm64": "bun build --compile --target=bun-darwin-arm64 --outfile dist/mini-pi-mcp-macos-arm64 src/bin.ts",
+    "build:macos:x64": "bun build --compile --target=bun-darwin-x64 --outfile dist/mcpx-lite-macos-x64 src/bin.ts",
+    "build:macos:arm64": "bun build --compile --target=bun-darwin-arm64 --outfile dist/mcpx-lite-macos-arm64 src/bin.ts",
     "build:macos": "pnpm build:macos:x64 && pnpm build:macos:arm64",
-    "build:linux:x64": "bun build --compile --target=bun-linux-x64 --outfile dist/mini-pi-mcp-linux-x64 src/bin.ts",
-    "build:linux:arm64": "bun build --compile --target=bun-linux-arm64 --outfile dist/mini-pi-mcp-linux-arm64 src/bin.ts",
+    "build:linux:x64": "bun build --compile --target=bun-linux-x64 --outfile dist/mcpx-lite-linux-x64 src/bin.ts",
+    "build:linux:arm64": "bun build --compile --target=bun-linux-arm64 --outfile dist/mcpx-lite-linux-arm64 src/bin.ts",
     "build:linux": "pnpm build:linux:x64 && pnpm build:linux:arm64",
-    "build:windows:x64": "bun build --compile --target=bun-windows-x64 --outfile dist/mini-pi-mcp-win-x64.exe src/bin.ts",
-    "build:windows:arm64": "bun build --compile --target=bun-windows-arm64 --outfile dist/mini-pi-mcp-win-arm64.exe src/bin.ts",
+    "build:windows:x64": "bun build --compile --target=bun-windows-x64 --outfile dist/mcpx-lite-win-x64.exe src/bin.ts",
+    "build:windows:arm64": "bun build --compile --target=bun-windows-arm64 --outfile dist/mcpx-lite-win-arm64.exe src/bin.ts",
     "build:windows": "pnpm build:windows:x64 && pnpm build:windows:arm64",
     "install:local": "./install.sh",
     "test": "vitest run",
@@ -24,19 +24,19 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.1.0",
-    "@modelcontextprotocol/node": "^2.1.0",
-    "@modelcontextprotocol/server": "^2.1.0",
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
     "mime-types": "^3.0.2",
     "trash": "^10.1.1",
     "yaml": "^2.9.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/mime-types": "^3.0.1",
-    "@types/node": "^24.19.0",
+    "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
-    "typescript": "^6.0.3",
-    "vitest": "^5.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

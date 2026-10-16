@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { ToolError } from './errors.js';
+import { errorMessage, ToolError } from './errors.js';
 import { writeFileAtomic } from './paths.js';
 import { resolvePath } from './session.js';
 
@@ -103,7 +103,7 @@ export async function commitPreparedEdits(
       committed.push(file);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     const uncertainPaths: string[] = [];
     for (const file of committed.reverse()) {
       try {

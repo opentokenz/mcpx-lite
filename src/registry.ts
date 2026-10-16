@@ -9,7 +9,7 @@ import {
 } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { isApprovalRequiredResult, type ToolObserver } from './approval.js';
-import { ToolError } from './errors.js';
+import { errorMessage, ToolError } from './errors.js';
 import type { Logger } from './log.js';
 import { resolvePath } from './session.js';
 import type { HistoryEntry, SessionFile, SessionStore } from './session.js';
@@ -342,9 +342,4 @@ function summarizeResult(result: unknown): Record<string, unknown> {
   }
 
   return { result: String(result) };
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }

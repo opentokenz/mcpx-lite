@@ -101,12 +101,6 @@ export function truncateToWidth(text: string, width: number): string {
   return text.includes('\u001b') ? `${result}…\u001b[0m` : `${result}…`;
 }
 
-/** 按可见宽度补齐空格（用于右边框对齐）。 */
-export function padToWidth(text: string, width: number): string {
-  const padding = width - displayWidth(text);
-  return padding > 0 ? text + ' '.repeat(padding) : text;
-}
-
 /**
  * 按可见宽度换行：超宽时硬断（保留 ANSI 序列），并按 `\n` 分行。
  * 返回至少一行（空串也返回 ['']）。

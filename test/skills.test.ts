@@ -14,7 +14,7 @@ async function writeSkill(dir: string, name: string, content: string): Promise<v
 }
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'mini-pi-skills-'));
+  root = await mkdtemp(join(tmpdir(), 'mcpx-lite-skills-'));
   globalDir = join(root, 'global-skills');
   workspace = join(root, 'project');
   await mkdir(globalDir, { recursive: true });

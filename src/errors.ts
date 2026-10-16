@@ -5,3 +5,7 @@ export class ToolError extends Error {
     this.name = 'ToolError';
   }
 }
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -14,7 +14,7 @@ describe('MCP config loader', () => {
   let workspace: string;
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'mini-pi-mcp-config-'));
+    root = await mkdtemp(join(tmpdir(), 'mcpx-lite-mcp-config-'));
     globalPath = join(root, 'home', '.agents', 'mcp.json');
     workspace = join(root, 'project');
     await mkdir(workspace, { recursive: true });

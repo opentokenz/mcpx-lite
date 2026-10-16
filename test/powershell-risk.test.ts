@@ -94,7 +94,7 @@ describe('PowerShell AST risk analysis', () => {
   });
 
   it.skipIf(process.platform !== 'win32')('parses PowerShell without executing nested commands', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mini-pi-ps-'));
+    const root = await mkdtemp(join(tmpdir(), 'mcpx-lite-ps-'));
     const marker = join(root, 'marker.txt');
     try {
       const command = `$(Set-Content -LiteralPath '${marker.replaceAll("'", "''")}' -Value 'executed')`;

@@ -1,8 +1,9 @@
 import { createServer, type Server } from 'node:http';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from '@modelcontextprotocol/node';
 import { createApprovalCodec } from './approval.js';
+import { errorMessage } from './errors.js';
 import { DEFAULT_TTL_MS, TokenStore, createFilesRoute } from './downloads.js';
 import { createLogger, resolveLogLevel, type Logger, type LogLevel } from './log.js';
 import { createMcpConnection } from './mcp-client.js';
@@ -12,6 +13,8 @@ import { buildHandler, type Deps } from './server.js';
 import { SessionStore } from './session.js';
 import { SkillIndex, SKILLS_SUBDIR } from './skills.js';
 import { createSystemTrashBackend } from './trash.js';
+import { closeServer, startRuntimeControl, stopRuntime } from './runtime-control.js';
+import { startDaemon } from './daemon.js';
 
 export interface Config {
   host: string;
@@ -20,22 +23,81 @@ export interface Config {
   globalSkillsDir: string;
   downloadTtlMs: number;
   logLevel: LogLevel;
+  approvalsEnabled: boolean;
+}
+
+export type CliMode = 'foreground' | 'daemon' | 'stop' | 'daemon-child';
+
+export function parseCliArgs(args: string[]): { mode: CliMode; port?: number; approvalsEnabled?: false } {
+  const modes: Record<string, CliMode> = {
+    '--daemon': 'daemon',
+    '-d': 'daemon',
+    '--stop': 'stop',
+    '--daemon-child': 'daemon-child',
+  };
+  let mode: CliMode = 'foreground';
+  let port: number | undefined;
+  let approvalsEnabled: false | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === '--no-approval') {
+      approvalsEnabled = false;
+      continue;
+    }
+    if (arg === '--port' || arg === '-p') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`);
+      if (!/^\d+$/.test(value)) throw new Error(`Invalid port: ${value}; valid port range is 1-65535`);
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+        throw new Error(`Invalid port: ${value}; valid port range is 1-65535`);
+      }
+      port = parsed;
+      index += 1;
+      continue;
+    }
+
+    const next = modes[arg];
+    if (!next) throw new Error(`Unknown argument: ${arg}`);
+    if (mode !== 'foreground') throw new Error('Runtime arguments cannot be combined');
+    mode = next;
+  }
+
+  return {
+    mode,
+    ...(port === undefined ? {} : { port }),
+    ...(approvalsEnabled === undefined ? {} : { approvalsEnabled }),
+  };
+}
+
+export function getCliArgs(argv: string[] = process.argv): string[] {
+  const entryIndex = argv.findIndex((arg) => basename(arg).toLowerCase() === 'bin.ts');
+  if (entryIndex >= 1) return argv.slice(entryIndex + 1);
+  if (/(?:^|[/\\])\$bunfs[/\\]root[/\\]/.test(argv[1] ?? '')) return argv.slice(2);
+  return argv.slice(1);
 }
 
 const DEFAULT_HOST = '127.0.0.1';
-const DEFAULT_PORT = 8787;
-const DEFAULT_HOME = join(homedir(), '.mini-pi-mcp');
+const DEFAULT_PORT = 29090;
+const DEFAULT_HOME = join(homedir(), '.mcpx-lite');
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const port = Number.parseInt(env['MINI_PI_MCP_PORT'] ?? '', 10);
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  portOverride?: number,
+  approvalsOverride?: false,
+): Config {
+  const port = Number.parseInt(env['MCPX_LITE_PORT'] ?? '', 10);
+  const approvalsEnabled = approvalsOverride ?? env['MCPX_LITE_APPROVALS']?.trim().toLowerCase() !== 'off';
 
   return {
-    host: env['MINI_PI_MCP_HOST']?.trim() || DEFAULT_HOST,
-    port: Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT,
-    home: env['MINI_PI_MCP_HOME']?.trim() || DEFAULT_HOME,
-    globalSkillsDir: env['MINI_PI_MCP_GLOBAL_SKILLS']?.trim() || join(homedir(), SKILLS_SUBDIR),
+    host: env['MCPX_LITE_HOST']?.trim() || DEFAULT_HOST,
+    port: portOverride ?? (Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT),
+    home: env['MCPX_LITE_HOME']?.trim() || DEFAULT_HOME,
+    globalSkillsDir: env['MCPX_LITE_GLOBAL_SKILLS']?.trim() || join(homedir(), SKILLS_SUBDIR),
     downloadTtlMs: DEFAULT_TTL_MS,
-    logLevel: resolveLogLevel(env['MINI_PI_MCP_LOG']),
+    logLevel: resolveLogLevel(env['MCPX_LITE_LOG']),
+    approvalsEnabled,
   };
 }
 
@@ -96,7 +158,7 @@ export function createHttpServer(deps: Deps): Server {
         res.end('{"error":"not found"}');
       })
       .catch((error: unknown) => {
-        deps.logger.event('files-route-error', { error: error instanceof Error ? error.message : String(error) });
+        deps.logger.event('files-route-error', { error: errorMessage(error) });
         if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
         res.end('{"error":"internal error"}');
       });
@@ -113,12 +175,12 @@ function createDeps(config: Config, logger?: Logger): { deps: Deps; logger: Logg
       skills: new SkillIndex({ globalSkillsDir: config.globalSkillsDir }),
       downloads: new TokenStore({ ttlMs: config.downloadTtlMs }),
       logger: resolvedLogger,
-      approvals: createApprovalCodec(),
+      approvals: createApprovalCodec({ enabled: config.approvalsEnabled }),
       mcpManager: new McpManager({ connect: createMcpConnection }),
       mcpTrust: new McpTrustStore(),
       mcpGlobalPath: join(homedir(), '.agents', 'mcp.json'),
       trashBackend: createSystemTrashBackend(),
-      config: { host: config.host, port: config.port },
+      config: { host: config.host, port: config.port, approvalsEnabled: config.approvalsEnabled },
     },
   };
 }
@@ -126,23 +188,58 @@ function createDeps(config: Config, logger?: Logger): { deps: Deps; logger: Logg
 export function createShutdownHandler(opts: {
   logger: Pick<Logger, 'event'>;
   manager: { closeAll(): Promise<void> };
-  server: { close(done: () => void): unknown };
+  server: { close(done: (error?: Error) => void): unknown };
+  control?: { close(): Promise<void> };
   exit: (code: number) => void;
 }) {
-  return async (signal: string): Promise<void> => {
-    opts.logger.event('shutdown', { signal });
-    await opts.manager.closeAll();
-    await new Promise<void>((done) => void opts.server.close(done));
-    opts.exit(0);
+  let shutdownPromise: Promise<void> | undefined;
+  return (signal: string): Promise<void> => {
+    shutdownPromise ??= (async () => {
+      opts.logger.event('shutdown', { signal });
+      await opts.manager.closeAll();
+      await closeServer(opts.server);
+      await opts.control?.close();
+      opts.exit(0);
+    })();
+    return shutdownPromise;
   };
 }
 
-export async function main(): Promise<void> {
-  const config = loadConfig();
+export async function main(args: string[] = getCliArgs()): Promise<void> {
+  const cli = parseCliArgs(args);
+  const config = loadConfig(process.env, cli.port, cli.approvalsEnabled);
+  if (cli.mode === 'stop') {
+    const stopped = await stopRuntime(config.home);
+    process.stdout.write(stopped ? 'mcpx-lite stopped\n' : 'mcpx-lite is not running\n');
+    return;
+  }
+  if (cli.mode === 'daemon') {
+    await startDaemon(args, config);
+    return;
+  }
+
+  await stopRuntime(config.home);
   const { deps, logger } = createDeps(config);
   const server = createHttpServer(deps);
 
-  await new Promise<void>((ready) => server.listen(config.port, config.host, ready));
+  await new Promise<void>((ready, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once('error', onError);
+    server.listen(config.port, config.host, () => {
+      server.removeListener('error', onError);
+      ready();
+    });
+  });
+
+  let shutdown: (signal: string) => Promise<void> = async () => undefined;
+  let control: Awaited<ReturnType<typeof startRuntimeControl>>;
+  try {
+    control = await startRuntimeControl(config.home, () => shutdown('CONTROL'));
+  } catch (error) {
+    await deps.mcpManager.closeAll();
+    await closeServer(server);
+    throw error;
+  }
 
   logger.event('listening', {
     host: config.host,
@@ -151,16 +248,22 @@ export async function main(): Promise<void> {
     skills: config.globalSkillsDir,
     log: logger.level,
   });
+  if (!config.approvalsEnabled) {
+    logger.event('warning', {
+      message: '审批已关闭：危险 shell、越界文件操作、trash 与 MCP 首次连接/调用将不再等待确认',
+    });
+  }
   if (!isLoopback(config.host)) {
     logger.event('warning', {
       message: '绑定非回环地址且无鉴权：任何能访问该端口的客户端都可以读写本机文件',
     });
   }
 
-  const shutdown = createShutdownHandler({
+  shutdown = createShutdownHandler({
     logger,
     manager: deps.mcpManager,
     server,
+    control,
     exit: (code) => process.exit(code),
   });
   process.on('SIGINT', () => void shutdown('SIGINT'));

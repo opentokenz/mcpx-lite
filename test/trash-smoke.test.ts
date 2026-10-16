@@ -19,7 +19,7 @@ afterEach(async () => {
 
 describe.skipIf(!smokeEnabled)('system trash backend smoke', () => {
   it('把临时文件移动到当前操作系统的回收站', async () => {
-    dir = await mkdtemp(join(tmpdir(), 'mini-pi-trash-smoke-'));
+    dir = await mkdtemp(join(tmpdir(), 'mcpx-lite-trash-smoke-'));
     const target = join(dir, `trash-${randomUUID()}.txt`);
     await writeFile(target, 'smoke\n', 'utf8');
 

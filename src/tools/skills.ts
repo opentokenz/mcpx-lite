@@ -3,7 +3,7 @@ import { ToolError } from '../errors.js';
 import type { Logger } from '../log.js';
 import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
 import type { SessionStore } from '../session.js';
-import type { SkillIndex, SkillMeta } from '../skills.js';
+import { skillMetadata, type SkillIndex } from '../skills.js';
 
 const SKILLS_ACTIONS = ['list', 'get', 'reload'] as const;
 
@@ -56,12 +56,12 @@ export function createSkillsTool(deps: {
 
       switch (args.action) {
         case 'list':
-          return { skills: metadata(await skills.scan(session.workspace)) };
+          return { skills: skillMetadata(await skills.scan(session.workspace)) };
 
         case 'reload': {
           const found = await skills.scan(session.workspace);
           logger.event('skills-reload', { session: session.id, skills: found.length });
-          return { skills: metadata(found) };
+          return { skills: skillMetadata(found) };
         }
 
         case 'get': {
@@ -86,8 +86,4 @@ export function createSkillsTool(deps: {
       }
     },
   });
-}
-
-function metadata(skills: SkillMeta[]): { name: string; description: string; source: string }[] {
-  return skills.map(({ name, description, source }) => ({ name, description, source }));
 }

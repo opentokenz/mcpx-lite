@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GATEWAY_INSTRUCTIONS, SessionStore, resolveWorkspace } from '../src/session.js';
+import { createGatewayInstructions, SessionStore, resolveWorkspace } from '../src/session.js';
 import type { SessionFile } from '../src/session.js';
 import type { SkillMeta } from '../src/skills.js';
 
@@ -30,7 +30,7 @@ const entry = (reason: string, overrides: Partial<Parameters<SessionStore['appen
 });
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'mini-pi-session-'));
+  root = await mkdtemp(join(tmpdir(), 'mcpx-lite-session-'));
   home = join(root, 'home');
   workspace = join(root, 'project');
   await mkdir(workspace, { recursive: true });
@@ -42,13 +42,15 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-describe('GATEWAY_INSTRUCTIONS', () => {
+describe('createGatewayInstructions', () => {
   it('说明这是真实机器网关、workspace 不是边界、破坏性操作需确认', () => {
-    expect(GATEWAY_INSTRUCTIONS).toContain('不是沙箱');
-    expect(GATEWAY_INSTRUCTIONS).toContain('真实');
-    expect(GATEWAY_INSTRUCTIONS).toContain('workspace');
-    expect(GATEWAY_INSTRUCTIONS).toMatch(/向用户|用户确认/);
-    expect(GATEWAY_INSTRUCTIONS).toMatch(/删除|rm -rf|git/);
+    const instructions = createGatewayInstructions();
+    expect(instructions).toContain('mcpx-lite');
+    expect(instructions).toContain('不是沙箱');
+    expect(instructions).toContain('真实');
+    expect(instructions).toContain('workspace');
+    expect(instructions).toMatch(/向用户|用户确认/);
+    expect(instructions).toMatch(/删除|rm -rf|git/);
   });
 });
 
@@ -179,6 +181,18 @@ describe('SessionStore.appendHistory', () => {
     const history = (await store.load(created.id)).history;
     expect(history).toHaveLength(10);
     expect(new Set(history.map((h) => h.reason)).size).toBe(10);
+  });
+
+  it('写队列在成功或失败后移除已完成 session 的链条', async () => {
+    const created = await store.create({ workspace });
+    const chains = Reflect.get(store, 'chains') as Map<string, unknown>;
+
+    await store.appendHistory(created.id, entry('完成'));
+    expect(chains.has(created.id)).toBe(false);
+
+    const missingId = 'ses_000000000000';
+    await expect(store.appendHistory(missingId, entry('失败'))).rejects.toThrow(/unknown session/);
+    expect(chains.has(missingId)).toBe(false);
   });
 
   it('未知 session 追加失败但不破坏已有文件', async () => {

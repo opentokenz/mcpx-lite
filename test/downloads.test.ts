@@ -34,7 +34,7 @@ async function startFilesServer(store: TokenStore) {
 }
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'mini-pi-downloads-'));
+  root = await mkdtemp(join(tmpdir(), 'mcpx-lite-downloads-'));
   workspace = join(root, 'project');
   outside = join(root, 'outside');
   await mkdir(join(workspace, 'dist'), { recursive: true });

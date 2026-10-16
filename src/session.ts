@@ -11,19 +11,36 @@ export const SESSIONS_SUBDIR = 'sessions';
 const DEFAULT_HISTORY_LIMIT = 200;
 
 /**
- * 创建 Session 时返回给调用方的全局提示词：mini-pi-mcp 是「模型 ↔ 真实机器」之间的网关，
+ * 创建 Session 时返回给调用方的全局提示词：mcpx-lite 是「模型 ↔ 真实机器」之间的网关，
  * 不是沙箱。同一段文案也会作为 MCP server 的 instructions 暴露给 2025-era 客户端。
  */
-export const GATEWAY_INSTRUCTIONS = [
-  '你是通过 mini-pi-mcp 连接到一台真实机器的模型，不是沙箱、不是容器、不是临时环境。',
-  '',
-  '- 真实副作用：write / edit 直接修改真实文件，fetch 会把文件内容交给调用方；trash 会把文件或目录移动到系统回收站；shell 命令与 git 操作都会真实生效并持续。edit 在提交失败时会尽力回滚，trash 不 fallback 永久删除，但都没有文件系统级 ACID 或隔离副本。',
-  '- 写文件优先用 edit 的 edits[]：每个 replacement 的 oldText 在当时内容中必须恰好匹配一次，同一个真实文件不能重复出现。需要删除文件/目录时优先使用 trash，不要用 rm / rmdir 绕过确认。',
-  '- workspace 是写类/外带工具（write / edit / fetch）的信任边界：workspace 内可直接执行；workspace 外（../ 穿越、绝对路径、symlink 逃逸）服务端会返回普通 approval_required 审核卡片和一次性 approvalToken。trash 无论目标是否在 workspace 内都必须确认；read 只读且无副作用，不受 workspace 限制；shell 可以 cd 到任意目录，它的审批由命令风险规则判定。',
-  '- 服务端已强制门禁，不能绕过：shell 的安全命令、unknown 命令与可撤回的本地 Git 操作直接执行；命中危险规则的命令和越界文件操作会先返回“确认执行 / 取消”审核卡片。调用方必须让用户选择；只有业务参数不变并携带 approvalToken + approvalDecision=approve 的重试才执行。goal / reason 仅用于审计，可变化或省略。',
-  '- 所以先约束自己：删除或大段覆盖代码、rm -rf、git reset / commit / push、发布、会丢失数据的操作、读取或修改 workspace 之外的敏感文件，都要先向用户说明要做什么与风险；命中门禁后使用工具返回的审核卡片让用户做选择，不要代替用户确认，也不要反复重试被取消或拒绝的调用。',
-  '- 不要假设有网络隔离、备份或自动测试兜底；不确定就先用只读手段（read / shell 查询）核实，并以真实机器上的实际输出与路径为准。',
-].join('\n');
+export function createGatewayInstructions(approvalsEnabled = true): string {
+  const common = [
+    '你是通过 mcpx-lite 连接到一台真实机器的模型，不是沙箱、不是容器、不是临时环境。',
+    '',
+    '- 真实副作用：write / edit 直接修改真实文件，fetch 会把文件内容交给调用方；trash 会把文件或目录移动到系统回收站；shell 命令与 git 操作都会真实生效并持续。edit 在提交失败时会尽力回滚，trash 不 fallback 永久删除，但都没有文件系统级 ACID 或隔离副本。',
+  ];
+
+  if (!approvalsEnabled) {
+    return [
+      ...common,
+      '- 写文件优先用 edit 的 edits[]：每个 replacement 的 oldText 在当时内容中必须恰好匹配一次，同一个真实文件不能重复出现。需要删除文件/目录时优先使用 trash。',
+      '- 审批已关闭：服务端不会返回 approval_required，也不会为危险 shell、workspace 外 write/edit/fetch、trash 或 MCP 首次连接/调用暂停执行。',
+      '- workspace 在此模式下是路径解析锚点和 shell 默认 cwd，不再构成审批边界；read 仍是只读操作。',
+      '- 关闭的只是 mcpx-lite 审批门禁；路径解析、参数校验、edit 并发修改保护、操作系统权限以及调用方自身安全策略仍然生效。',
+      '- 不要假设有网络隔离、备份或自动测试兜底；不确定就先用只读手段（read / shell 查询）核实，并以真实机器上的实际输出与路径为准。',
+    ].join('\n');
+  }
+
+  return [
+    ...common,
+    '- 写文件优先用 edit 的 edits[]：每个 replacement 的 oldText 在当时内容中必须恰好匹配一次，同一个真实文件不能重复出现。需要删除文件/目录时优先使用 trash，不要用 rm / rmdir 绕过确认。',
+    '- workspace 是写类/外带工具（write / edit / fetch）的信任边界：workspace 内可直接执行；workspace 外（../ 穿越、绝对路径、symlink 逃逸）服务端会返回普通 approval_required 审核卡片和一次性 approvalToken。trash 无论目标是否在 workspace 内都必须确认；read 只读且无副作用，不受 workspace 限制；shell 可以 cd 到任意目录，它的审批由命令风险规则判定。',
+    '- 服务端已强制门禁，不能绕过：shell 的安全命令、unknown 命令与可撤回的本地 Git 操作直接执行；命中危险规则的命令和越界文件操作会先返回“确认执行 / 取消”审核卡片。调用方必须让用户选择；只有业务参数不变并携带 approvalToken + approvalDecision=approve 的重试才执行。goal / reason 仅用于审计，可变化或省略。',
+    '- 所以先约束自己：删除或大段覆盖代码、rm -rf、git reset / commit / push、发布、会丢失数据的操作、读取或修改 workspace 之外的敏感文件，都要先向用户说明要做什么与风险；命中门禁后使用工具返回的审核卡片让用户做选择，不要代替用户确认，也不要反复重试被取消或拒绝的调用。',
+    '- 不要假设有网络隔离、备份或自动测试兜底；不确定就先用只读手段（read / shell 查询）核实，并以真实机器上的实际输出与路径为准。',
+  ].join('\n');
+}
 
 const skillMetaSchema = z.object({
   name: z.string(),
@@ -96,12 +113,9 @@ export async function resolveWorkspace(workspace: string): Promise<string> {
   return realpath(absolute);
 }
 
-/**
- * 目标真实路径是否位于 workspace 内：两侧都必须是 realpath，用 relative 判断而不是字符串前缀。
- * workspace 本身不算“内部”（edit 只处理普通文件，不会命中目录）。
- */
-export function isInsideWorkspace(workspace: string, target: string): boolean {
-  const rel = relative(workspace, target);
+/** 目标是否是 parent 的严格后代路径；用 relative 判断，避免字符串前缀误判。 */
+export function isPathWithin(parent: string, target: string): boolean {
+  const rel = relative(parent, target);
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
@@ -235,13 +249,12 @@ export class SessionStore {
   private queue<T>(id: string, task: () => Promise<T>): Promise<T> {
     const previous = this.chains.get(id) ?? Promise.resolve();
     const next = previous.then(task, task);
-    this.chains.set(
-      id,
-      next.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
+    let chain: Promise<void>;
+    const cleanup = () => {
+      if (this.chains.get(id) === chain) this.chains.delete(id);
+    };
+    chain = next.then(cleanup, cleanup);
+    this.chains.set(id, chain);
     return next;
   }
 }

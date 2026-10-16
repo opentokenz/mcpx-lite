@@ -52,7 +52,7 @@ export interface McpConnection extends ManagedMcpConnection {
   info(): McpConnectionInfo;
 }
 
-const DEFAULT_CLIENT_INFO = { name: 'mini-pi-mcp-gateway', version: '0.1.0' };
+const DEFAULT_CLIENT_INFO = { name: 'mcpx-lite-gateway', version: '0.1.0' };
 
 export async function createMcpConnection(
   server: ResolvedMcpServer,

@@ -6,10 +6,10 @@ import {
   hashArgs,
   type ApprovalCodec,
 } from '../approval.js';
-import { ToolError } from '../errors.js';
+import { errorMessage, ToolError } from '../errors.js';
 import { realpathDeep, writeFileAtomic } from '../paths.js';
 import { defineTool, describePath, withGoalReason, type ToolDef } from '../registry.js';
-import { isInsideWorkspace, resolvePath } from '../session.js';
+import { isPathWithin, resolvePath } from '../session.js';
 
 export const writeSchema = withGoalReason({
   sessionId: z.string().min(1).describe('session create 返回的会话 id'),
@@ -60,7 +60,7 @@ export function createWriteTool(approvals: ApprovalCodec): ToolDef {
 
       // 目标可能尚不存在，用 realpathDeep 求「真实目标」；解析不出来就按 fail closed 处理
       const target = await realpathDeep(absolute);
-      if (target === null || !isInsideWorkspace(session.workspace, target)) {
+      if (target === null || !isPathWithin(session.workspace, target)) {
         const approval = await enforceWorkspaceBoundary({
           codec: approvals,
           sessionId: session.id,
@@ -81,7 +81,7 @@ export function createWriteTool(approvals: ApprovalCodec): ToolDef {
       try {
         await writeFileAtomic(target ?? absolute, args.content);
       } catch (error) {
-        throw new ToolError(`could not write ${absolute}: ${error instanceof Error ? error.message : String(error)}`);
+        throw new ToolError(`could not write ${absolute}: ${errorMessage(error)}`);
       }
 
       return { path: absolute, bytes, created: !existed };

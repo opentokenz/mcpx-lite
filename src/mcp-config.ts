@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ToolError } from './errors.js';
+import { errorMessage, ToolError } from './errors.js';
 
 export type McpConfigSource = 'global' | 'project';
 export type McpTransport = 'stdio' | 'http';
@@ -240,8 +240,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNotFound(error: unknown): boolean {
   return isRecord(error) && error['code'] === 'ENOENT';
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

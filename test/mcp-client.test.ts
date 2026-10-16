@@ -32,6 +32,7 @@ function http(): ResolvedMcpServer {
 }
 
 function fakeFactory(log: {
+  clientInfo?: unknown;
   clientOptions?: unknown;
   stdio?: unknown;
   http?: unknown;
@@ -60,7 +61,8 @@ function fakeFactory(log: {
 
   return {
     getDefaultEnvironment: () => ({ PATH: '/safe/bin', HOME: '/safe/home' }),
-    createClient: (_info, options) => {
+    createClient: (info, options) => {
+      log.clientInfo = info;
       log.clientOptions = options;
       return client;
     },
@@ -80,6 +82,7 @@ describe('MCP client connector', () => {
     const log: Record<string, unknown> = {};
     const connection = await createMcpConnection(stdio(), fakeFactory(log));
 
+    expect(log.clientInfo).toEqual({ name: 'mcpx-lite-gateway', version: '0.1.0' });
     expect(log.clientOptions).toMatchObject({
       versionNegotiation: { mode: 'auto' },
       inputRequired: { autoFulfill: false },

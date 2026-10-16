@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createMcpConnection } from '../src/mcp-client.js';
+import type { ResolvedMcpServer } from '../src/mcp-config.js';
 import {
   approvalRetryBody,
   createHarness,
@@ -53,7 +55,7 @@ describe('fetch 工具（进程内）', () => {
     expect(payload['mimeType']).toBe('application/pdf');
     expect(payload['size']).toBe(PDF_BYTES.length);
     expect(payload['path']).toBe(join(h.workspace, 'dist', 'report.pdf'));
-    expect(payload['url']).toMatch(/^http:\/\/127\.0\.0\.1:8787\/files\/file_[A-Za-z0-9_-]{32}$/);
+    expect(payload['url']).toMatch(/^http:\/\/127\.0\.0\.1:29090\/files\/file_[A-Za-z0-9_-]{32}$/);
     expect(Date.parse(payload['expiresAt'] as string)).toBeGreaterThan(Date.now());
 
     const link = outcome.content?.[0];
@@ -253,6 +255,29 @@ describe('fetch 工具（进程内）', () => {
 });
 
 describe('真实 HTTP 端到端', () => {
+  it('关闭审批后 initialize instructions 明确说明不再返回 approval_required', async () => {
+    await h.cleanup();
+    h = await createHarness({ approvalsEnabled: false });
+    server = await h.startHttpServer();
+    const downstream: ResolvedMcpServer = {
+      name: 'self',
+      source: 'global',
+      transport: 'http',
+      url: `${server.origin}/mcp`,
+      headers: {},
+      display: { url: `${server.origin}/mcp`, headers: [] },
+      hash: 'self-no-approval',
+    };
+    const connection = await createMcpConnection(downstream);
+
+    try {
+      expect(connection.info().instructions).toContain('审批已关闭');
+      expect(connection.info().instructions).not.toMatch(/必须让用户选择|先向用户说明/);
+    } finally {
+      await connection.close();
+    }
+  });
+
   it('暴露恰好 9 个工具，描述都带使用说明与示例', async () => {
     server = await h.startHttpServer();
 
@@ -428,10 +453,10 @@ describe('真实 HTTP 端到端', () => {
     expect(isLoopback(loadConfig({}).host)).toBe(true);
     expect(isLoopback('0.0.0.0')).toBe(false);
     expect(isLoopback('192.168.1.9')).toBe(false);
-    expect(loadConfig({}).port).toBe(8787);
-    expect(loadConfig({ MINI_PI_MCP_PORT: '9000' }).port).toBe(9000);
-    expect(loadConfig({ MINI_PI_MCP_PORT: 'abc' }).port).toBe(8787);
-    expect(loadConfig({ MINI_PI_MCP_LOG: 'off' }).logLevel).toBe('off');
+    expect(loadConfig({}).port).toBe(29090);
+    expect(loadConfig({ MCPX_LITE_PORT: '9000' }).port).toBe(9000);
+    expect(loadConfig({ MCPX_LITE_PORT: 'abc' }).port).toBe(29090);
+    expect(loadConfig({ MCPX_LITE_LOG: 'off' }).logLevel).toBe('off');
   });
 
   it('fetch 链接的 origin 优先取反向代理头（公网域名）', async () => {

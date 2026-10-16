@@ -1,4 +1,4 @@
-# Mini Pi MCP
+# mcpx-lite
 
 支持可接续 Session、按需 Skills 和本地文件传输的**极简无模型 Coding Runtime**。
 
@@ -11,12 +11,12 @@
 Studio / Agent / LLM
         │  MCP (Streamable HTTP)
         ▼
-   Mini Pi MCP  ──►  Local PC（真实文件系统 / 真实 shell）
+   mcpx-lite  ──►  Local PC（真实文件系统 / 真实 shell）
 ```
 
 ## 要求
 
-- Node.js >= 22
+- Node.js >= 24
 - pnpm
 - Windows 10/11：系统提供的 Windows PowerShell 5.1；shell 工具在 Windows 中使用 PowerShell，macOS/Linux 使用 Bash
 
@@ -26,10 +26,16 @@ Studio / Agent / LLM
 
 ```bash
 pnpm install
-pnpm start            # 默认监听 127.0.0.1:8787
+pnpm start                         # 前台运行，默认监听 127.0.0.1:29090
+pnpm start -- --daemon             # 后台运行
+pnpm start -- --daemon --port 3000 # 指定端口后台运行
+pnpm start -- --no-approval        # 关闭全部 mcpx-lite 审批门禁
+pnpm start -- --stop               # 停止后台实例
 ```
 
-Windows PowerShell 中也使用 `pnpm install` 与 `pnpm start`。创建 session 时，`workspace` 可使用盘符路径或 UNC 路径，例如 `C:\work\project` 或 `\\server\share\project`。
+Windows PowerShell 中也使用 `pnpm install` 与 `pnpm start`。参数支持 `--daemon` / `-d`、`--stop`、`--port` / `-p` 和 `--no-approval`；CLI 端口参数优先于环境变量。创建 session 时，`workspace` 可使用盘符路径或 UNC 路径，例如 `C:\work\project` 或 `\\server\share\project`。
+
+前台和后台启动都会先停止由当前版本登记的旧实例。后台日志写入 `~/.mcpx-lite/daemon.log`；设置 `MCPX_LITE_HOME` 后，日志和实例记录保存在该目录。新版本不读取或迁移旧会话数据；若旧服务仍运行且占用相同端口，请先在原终端按 `Ctrl+C` 停止。
 
 ## 平台可执行文件
 
@@ -42,7 +48,7 @@ Windows PowerShell 中也使用 `pnpm install` 与 `pnpm start`。创建 session
 pnpm build:macos
 ```
 
-产物：`dist/mini-pi-mcp-macos-x64`（Intel）和 `dist/mini-pi-mcp-macos-arm64`（Apple Silicon）。
+产物：`dist/mcpx-lite-macos-x64`（Intel）和 `dist/mcpx-lite-macos-arm64`（Apple Silicon）。
 
 ### Linux
 
@@ -50,7 +56,7 @@ pnpm build:macos
 pnpm build:linux
 ```
 
-产物：`dist/mini-pi-mcp-linux-x64` 和 `dist/mini-pi-mcp-linux-arm64`。
+产物：`dist/mcpx-lite-linux-x64` 和 `dist/mcpx-lite-linux-arm64`。
 
 ### Windows
 
@@ -58,7 +64,7 @@ pnpm build:linux
 pnpm build:windows
 ```
 
-产物：`dist/mini-pi-mcp-win-x64.exe` 与 `dist/mini-pi-mcp-win-arm64.exe`。
+产物：`dist/mcpx-lite-win-x64.exe` 与 `dist/mcpx-lite-win-arm64.exe`。
 exe 不内置用户配置、skills 或 session；这些数据仍从当前用户 home 目录和项目目录读取。
 Windows ARM64 exe 需在原生 Windows ARM64 设备上运行验收。
 
@@ -71,26 +77,36 @@ pnpm install:local
 ```
 
 脚本按当前主机平台和架构构建当前 checkout 的代码，并将二进制安装到
-`~/.local/bin/mini-pi-mcp`。需要预先安装 pnpm、Bun 和项目依赖；脚本不会拉取 Git 更新，
+`~/.local/bin/mcpx-lite`。需要预先安装 pnpm、Bun 和项目依赖；脚本不会拉取 Git 更新，
 也不会修改 shell 配置或 PATH；若 `~/.local/bin` 不在 PATH 中，需自行添加。仅支持 macOS/Linux x64 与 ARM64。
+
+安装后可直接用 CLI 参数启停：
+
+```bash
+mcpx-lite --daemon
+mcpx-lite --daemon --port 3000
+mcpx-lite --daemon --no-approval
+mcpx-lite --stop
+```
 
 环境变量：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MINI_PI_MCP_HOST` | `127.0.0.1` | 监听地址。绑非回环地址时启动会打印「无鉴权」警告 |
-| `MINI_PI_MCP_PORT` | `8787` | 监听端口 |
-| `MINI_PI_MCP_HOME` | `~/.mini-pi-mcp` | Session 存储目录（`<home>/sessions/<id>.json`） |
-| `MINI_PI_MCP_GLOBAL_SKILLS` | `~/.agents/skills` | 全局 skill 目录 |
-| `MINI_PI_MCP_LOG` | `debug` | 终端观测日志级别：`debug`（含调用起点与底层请求）/ `info`（只输出工具结果卡片与安全事件）/ `off` |
+| `MCPX_LITE_HOST` | `127.0.0.1` | 监听地址。绑非回环地址时启动会打印「无鉴权」警告 |
+| `MCPX_LITE_PORT` | `29090` | 监听端口 |
+| `MCPX_LITE_HOME` | `~/.mcpx-lite` | Session 存储目录（`<home>/sessions/<id>.json`） |
+| `MCPX_LITE_GLOBAL_SKILLS` | `~/.agents/skills` | 全局 skill 目录 |
+| `MCPX_LITE_LOG` | `debug` | 终端观测日志级别：`debug`（含调用起点与底层请求）/ `info`（只输出工具结果卡片与安全事件）/ `off` |
+| `MCPX_LITE_APPROVALS` | `on` | 设为 `off` 时关闭全部 mcpx-lite 审批门禁；等价于启动时传 `--no-approval` |
 
 ## 客户端接法
 
-MCP 服务地址就是 `http://127.0.0.1:8787/mcp`（Streamable HTTP，POST）。
+MCP 服务地址就是 `http://127.0.0.1:29090/mcp`（Streamable HTTP，POST）。
 2026-07-28 要求每个请求自带协议版本头部与 `_meta` 信封：
 
 ```bash
-curl -s http://127.0.0.1:8787/mcp \
+curl -s http://127.0.0.1:29090/mcp \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
   -H 'mcp-protocol-version: 2026-07-28' \
@@ -105,7 +121,7 @@ curl -s http://127.0.0.1:8787/mcp \
 创建 Session（除 `session` 工具外，其余工具都必须带这个 `sessionId`）：
 
 ```bash
-curl -s http://127.0.0.1:8787/mcp \
+curl -s http://127.0.0.1:29090/mcp \
   -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
   -H 'mcp-protocol-version: 2026-07-28' -H 'mcp-method: tools/call' -H 'mcp-name: session' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"session","arguments":{"action":"create","workspace":"/path/to/project"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
@@ -117,9 +133,17 @@ curl -s http://127.0.0.1:8787/mcp \
 所有工具仍接受 `goal` / `reason` 作为**可选审计字段**；提供时会写入 session history。
 它们不是执行工具所需的业务参数，客户端可以省略，避免为每次调用额外生成自由文本。
 
+## 关闭全部审批
+
+默认仍启用审批。显式传 `--no-approval`，或设置 `MCPX_LITE_APPROVALS=off`，会关闭当前 mcpx-lite 进程的**全部审批门禁**：危险 `shell`、workspace 外 `write` / `edit` / `fetch`、所有 `trash`、项目级 MCP 首次连接，以及下游 MCP 首次工具调用都不会再返回 `approval_required`，而是直接继续执行。前台与 daemon 模式都支持；关闭时启动日志会打印显式警告。
+
+这个开关只关闭审批，不跳过其余校验与保护：路径解析、参数 schema、`edit` 唯一匹配和并发修改检测、PowerShell AST/语法检查、操作系统权限等仍然生效。`session` 返回的 `instructions` 与 MCP initialize instructions 也会明确标记“审批已关闭”，避免调用方继续按旧门禁语义等待确认。
+
+> 这是高风险模式。mcpx-lite 操作的是真实机器，并且没有沙箱或自动回滚。需要恢复默认行为时，去掉 `--no-approval` 并不要把 `MCPX_LITE_APPROVALS` 设为 `off`，然后重启服务。
+
 ## Session Workspace 语义
 
-`workspace` 是**项目锚点**，同时是**写类 / 外带工具的信任边界**（`write` / `edit` / `fetch`）：
+`workspace` 是**项目锚点**；审批开启时，同时是**写类 / 外带工具的信任边界**（`write` / `edit` / `fetch`）：
 
 - 相对路径 → `resolve(workspace, path)`；绝对路径 → 直接使用；`..` 允许使用
 - `workspace` 内：`write` 直接写、`edit` 直接改、`fetch` 直接签发链接；`trash` 仍然必须确认
@@ -128,11 +152,12 @@ curl -s http://127.0.0.1:8787/mcp \
   （`realpath`，会跟随 symlink）
 - `read` **不受 workspace 限制**：只读且无副作用，workspace 内 / workspace 外都直接读，不需要确认
 - `shell` 的默认 `cwd = workspace`，但可以 `cd ..`、`cd /tmp`、访问任意目录：它的审批由**危险命令规则**判定，不是路径判定（见下）
-- 真正的边界仍然是运行 Mini Pi MCP 的进程所拥有的操作系统权限
+- 审批关闭时，上述 `approval_required` 分支全部跳过，`workspace` 只保留路径解析锚点和 shell 默认 cwd 的作用
+- 真正的边界仍然是运行 mcpx-lite 的进程所拥有的操作系统权限
 
 ## 安全门禁（shell / 文件类工具）
 
-写类工具边界与命中的危险 shell 命令不再只靠提示词约束，而是由 MCP Server 强制执行：
+审批开启时，写类工具边界与命中的危险 shell 命令不再只靠提示词约束，而是由 MCP Server 强制执行：
 
 ```text
 shell / write / edit / trash / fetch 调用
@@ -269,7 +294,7 @@ shell / write / edit / trash / fetch 调用
 
 ## MCP 网关（mcp_tool）
 
-`mcp_tool` 是固定的顶层工具之一：mini-pi 自己作为 MCP client 连接下游 server，但**不会**把下游 tools 动态注册到 mini-pi 的 `tools/list`。这样宿主始终只看到稳定的 9 个工具，下游 catalog 变化通过 `mcp_tool inspect` 获取，不依赖宿主重新扫描 tool metadata。
+`mcp_tool` 是固定的顶层工具之一：mcpx-lite 自己作为 MCP client 连接下游 server，但**不会**把下游 tools 动态注册到 mcpx-lite 的 `tools/list`。这样宿主始终只看到稳定的 9 个工具，下游 catalog 变化通过 `mcp_tool inspect` 获取，不依赖宿主重新扫描 tool metadata。
 
 配置来源：
 
@@ -317,13 +342,13 @@ shell / write / edit / trash / fetch 调用
 
 - **global 配置**视为用户主动安装的能力，可按需连接。
 - **project `.mcp.json`** 属于 repository-controlled input；第一次真正连接该配置前必须返回 `approval_required`。stdio 审批前不会 spawn 子进程，HTTP 审批前不会发网络请求。
-- 下游 `call` 首次调用某个 server 时返回 `approval_required`；用户确认后，同 session + server + resolved config 的后续 `call` 免审批。mini-pi 不再按 downstream `readOnlyHint` / `destructiveHint` 逐次判断。
+- 下游 `call` 首次调用某个 server 时返回 `approval_required`；用户确认后，同 session + server + resolved config 的后续 `call` 免审批。mcpx-lite 不再按 downstream `readOnlyHint` / `destructiveHint` 逐次判断。
 - `read_resource` / `get_prompt` 在连接建立后直接执行。project 配置首次连接仍需审批；若首次操作就是 `call`，同一张审批卡同时展示连接与首次工具调用，并绑定 `tool + arguments`，避免连续弹两张审批卡。
 - project-connect approval 绑定 server resolved config；若同一张卡覆盖首次 `call`，会额外绑定 `tool + arguments`。`goal` / `reason` 仍是可选审计字段，不参与 token 一致性比对。
 - 下游 `tools/call` / `resources/read` / `prompts/get` 的 MCP 2026-07-28 `input_required` 会原样透传；重试时 `requestState` 按 opaque 字符串 byte-exact 回送，并携带上游 `inputResponses`。
 - 下游 connection 由进程级 `McpManager` 复用，按 server name + resolved config hash 隔离；不同项目对同名 server 的 override 不会串连接。
-- 服务退出时会先关闭所有 downstream connection / stdio child process，再关闭 mini-pi HTTP server。
-- 首版不专门支持 legacy SSE，也不让 mini-pi 充当 Sampling / Roots / LLM Provider。
+- 服务退出时会先关闭所有 downstream connection / stdio child process，再关闭 mcpx-lite HTTP server。
+- 首版不专门支持 legacy SSE，也不让 mcpx-lite 充当 Sampling / Roots / LLM Provider。
 
 示例：
 
@@ -356,7 +381,7 @@ shell / write / edit / trash / fetch 调用
   "name": "report.pdf",
   "mimeType": "application/pdf",
   "size": 183402,
-  "url": "http://127.0.0.1:8787/files/file_xxx",
+  "url": "http://127.0.0.1:29090/files/file_xxx",
   "expiresAt": "2026-09-26T00:05:00.000Z"
 }
 ```
@@ -386,14 +411,14 @@ shell / write / edit / trash / fetch 调用
 - 这些值来自请求头（调用方自述），单用户 runtime 下可接受；只接受 `http` / `https`，
   并会丢掉路径与非法值
 - 监听在通配地址（`0.0.0.0` / `::`）时，若又推断不出对外地址，会输出一条 `fetch-origin-warning`
-  事件提醒：回退出来的链接客户端不可达，需要转发代理头或把 `MINI_PI_MCP_HOST` 设为客户端可达地址
+  事件提醒：回退出来的链接客户端不可达，需要转发代理头或把 `MCPX_LITE_HOST` 设为客户端可达地址
 - 返回 URL 的 `origin` 按顺序取：`Forwarded`（RFC 7239）→ `X-Forwarded-Proto` + `X-Forwarded-Host` →
   请求自身的绝对 URL（仅当 hostname 不是回环地址）→ 服务配置的 `host:port`；
   部署在反向代理后面时转发这些头，客户端就能拿到对外域名
 - 这些值来自请求头（调用方自述），单用户 runtime 下可接受；只接受 `http` / `https`，
   并会丢掉路径与非法值
 - 监听在通配地址（`0.0.0.0` / `::`）时，若又推断不出对外地址，会输出一条 `fetch-origin-warning`
-  事件提醒：回退出来的链接客户端不可达，需要转发代理头或把 `MINI_PI_MCP_HOST` 设为客户端可达地址
+  事件提醒：回退出来的链接客户端不可达，需要转发代理头或把 `MCPX_LITE_HOST` 设为客户端可达地址
 
 ## 终端观测日志
 
@@ -459,7 +484,7 @@ src/
 ├── index.ts        # 入口：env、HTTP 路由（/mcp、/files/:token）、优雅退出
 ├── server.ts       # createMcpHandler 工厂 + 9 工具装配
 ├── registry.ts     # ToolDef、统一错误包装、审核 pending 识别、终端卡片、history 落盘
-├── session.ts      # Session 持久化 + workspace 解析 + workspace 边界判定 + GATEWAY_INSTRUCTIONS
+├── session.ts      # Session 持久化 + workspace 解析 + workspace 边界判定 + 动态网关提示词
 ├── skills.ts       # skill 扫描 / frontmatter / 去重 / 读正文
 ├── mcp-config.ts   # ~/.agents/mcp.json + <workspace>/.mcp.json 解析、覆盖、env 展开与 secret-safe metadata
 ├── mcp-client.ts   # downstream MCP client adapter（stdio / Streamable HTTP / manual MRTR）

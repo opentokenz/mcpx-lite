@@ -1,3 +1,4 @@
+import { errorMessage } from './errors.js';
 import type { ResolvedMcpServer } from './mcp-config.js';
 
 export interface ManagedMcpConnection {
@@ -30,7 +31,7 @@ export class McpManager<C extends ManagedMcpConnection = ManagedMcpConnection> {
     sanitizeError?: (error: unknown) => string;
   }) {
     this.connect = opts.connect;
-    this.sanitizeError = opts.sanitizeError ?? defaultErrorMessage;
+    this.sanitizeError = opts.sanitizeError ?? errorMessage;
   }
 
   async get(scopeId: string, server: ResolvedMcpServer): Promise<C> {
@@ -146,8 +147,4 @@ export class McpManager<C extends ManagedMcpConnection = ManagedMcpConnection> {
 
 function connectionKey(server: ResolvedMcpServer): string {
   return `${server.name}\0${server.hash}`;
-}
-
-function defaultErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

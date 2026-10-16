@@ -3,7 +3,7 @@ import { APPROVAL_INPUT_FIELDS, enforceApproval, hashArgs, type ApprovalCodec } 
 import { commitPreparedEdits, prepareBatchEdits } from '../edit-batch.js';
 import { ToolError } from '../errors.js';
 import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
-import { isInsideWorkspace, resolvePath } from '../session.js';
+import { isPathWithin, resolvePath } from '../session.js';
 
 const replacementSchema = z.object({
   oldText: z.string().min(1).describe('要被替换的原文；每一步必须恰好匹配一次'),
@@ -52,7 +52,7 @@ export function createEditTool(approvals: ApprovalCodec): ToolDef {
 
       const prepared = await prepareBatchEdits(session.workspace, args.edits);
 
-      const outsideTargets = prepared.filter((file) => !isInsideWorkspace(session.workspace, file.target));
+      const outsideTargets = prepared.filter((file) => !isPathWithin(session.workspace, file.target));
       if (outsideTargets.length > 0) {
         const contextHash = hashArgs(prepared.map((file) => [file.target, file.originalHash]));
         const approval = await enforceApproval({

@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isInsideWorkspace, resolvePath } from '../src/session.js';
+import { isPathWithin, resolvePath } from '../src/session.js';
 
 describe('resolvePath（Session Workspace 解析）', () => {
   it('相对路径基于 workspace 解析', () => {
@@ -42,30 +42,29 @@ describe('resolvePath（Session Workspace 解析）', () => {
   });
 });
 
-describe('isInsideWorkspace（edit 的 workspace 边界判定）', () => {
-  it('workspace 内（含子目录、相对路径解析后的结果）为 true', () => {
-    const workspace = resolve('a', 'b');
-    expect(isInsideWorkspace(workspace, join(workspace, 'file.ts'))).toBe(true);
-    expect(isInsideWorkspace(workspace, join(workspace, 'c', 'd', 'file.ts'))).toBe(true);
-    expect(isInsideWorkspace(workspace, resolvePath(workspace, join('src', 'x.ts')))).toBe(true);
+describe('isPathWithin（路径严格包含判定）', () => {
+  it('parent 内（含多层子目录）为 true', () => {
+    const parent = resolve('a', 'b');
+    expect(isPathWithin(parent, join(parent, 'file.ts'))).toBe(true);
+    expect(isPathWithin(parent, join(parent, 'c', 'd', 'file.ts'))).toBe(true);
   });
 
-  it('不能用字符串前缀判断：同前缀的兄弟目录在 workspace 外', () => {
-    const workspace = resolve('a', 'b');
-    expect(isInsideWorkspace(workspace, join(dirname(workspace), `${basename(workspace)}c`, 'file.ts'))).toBe(false);
-    expect(isInsideWorkspace(workspace, `${workspace}.txt`)).toBe(false);
+  it('不能用字符串前缀判断：同前缀的兄弟目录在 parent 外', () => {
+    const parent = resolve('a', 'b');
+    expect(isPathWithin(parent, join(dirname(parent), `${basename(parent)}c`, 'file.ts'))).toBe(false);
+    expect(isPathWithin(parent, `${parent}.txt`)).toBe(false);
   });
 
-  it('workspace 本身与上层目录都在 workspace 外', () => {
-    const workspace = resolve('a', 'b');
-    expect(isInsideWorkspace(workspace, workspace)).toBe(false);
-    expect(isInsideWorkspace(workspace, dirname(workspace))).toBe(false);
+  it('parent 本身与上层目录都不算严格后代', () => {
+    const parent = resolve('a', 'b');
+    expect(isPathWithin(parent, parent)).toBe(false);
+    expect(isPathWithin(parent, dirname(parent))).toBe(false);
   });
 
-  it('../ 穿越与其它绝对路径在 workspace 外', () => {
-    const workspace = resolve('a', 'b');
-    expect(isInsideWorkspace(workspace, resolvePath(workspace, join('..', 'c.ts')))).toBe(false);
-    expect(isInsideWorkspace(workspace, resolve('etc', 'hosts'))).toBe(false);
+  it('../ 穿越与其它绝对路径在 parent 外', () => {
+    const parent = resolve('a', 'b');
+    expect(isPathWithin(parent, resolve(parent, '..', 'c.ts'))).toBe(false);
+    expect(isPathWithin(parent, resolve('etc', 'hosts'))).toBe(false);
   });
 });
 
@@ -74,17 +73,17 @@ describe.skipIf(process.platform !== 'win32')('Windows 路径边界', () => {
     const workspace = 'C:\\work\\project';
 
     expect(resolvePath(workspace, 'src\\app.ts')).toBe('C:\\work\\project\\src\\app.ts');
-    expect(isInsideWorkspace(workspace, 'c:\\WORK\\PROJECT\\src\\app.ts')).toBe(true);
-    expect(isInsideWorkspace(workspace, 'C:\\work\\project-old\\app.ts')).toBe(false);
-    expect(isInsideWorkspace(workspace, 'D:\\work\\project\\app.ts')).toBe(false);
+    expect(isPathWithin(workspace, 'c:\\WORK\\PROJECT\\src\\app.ts')).toBe(true);
+    expect(isPathWithin(workspace, 'C:\\work\\project-old\\app.ts')).toBe(false);
+    expect(isPathWithin(workspace, 'D:\\work\\project\\app.ts')).toBe(false);
   });
 
   it('正确处理 UNC workspace 及共享目录之外的目标', () => {
     const workspace = '\\\\server\\share\\project';
 
     expect(resolvePath(workspace, 'src\\app.ts')).toBe('\\\\server\\share\\project\\src\\app.ts');
-    expect(isInsideWorkspace(workspace, '\\\\SERVER\\SHARE\\PROJECT\\src\\app.ts')).toBe(true);
-    expect(isInsideWorkspace(workspace, '\\\\server\\share\\project-old\\app.ts')).toBe(false);
-    expect(isInsideWorkspace(workspace, '\\\\other-server\\share\\project\\app.ts')).toBe(false);
+    expect(isPathWithin(workspace, '\\\\SERVER\\SHARE\\PROJECT\\src\\app.ts')).toBe(true);
+    expect(isPathWithin(workspace, '\\\\server\\share\\project-old\\app.ts')).toBe(false);
+    expect(isPathWithin(workspace, '\\\\other-server\\share\\project\\app.ts')).toBe(false);
   });
 });

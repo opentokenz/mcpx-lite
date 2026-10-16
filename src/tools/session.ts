@@ -2,8 +2,8 @@ import * as z from 'zod/v4';
 import { ToolError } from '../errors.js';
 import type { Logger } from '../log.js';
 import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
-import { GATEWAY_INSTRUCTIONS, resolveWorkspace, type SessionStore } from '../session.js';
-import type { SkillIndex, SkillMeta } from '../skills.js';
+import { createGatewayInstructions, resolveWorkspace, type SessionStore } from '../session.js';
+import { skillMetadata, type SkillIndex } from '../skills.js';
 
 const SESSION_ACTIONS = ['create', 'resume', 'get', 'list', 'close'] as const;
 
@@ -42,8 +42,11 @@ export function createSessionTool(deps: {
   sessions: SessionStore;
   skills: SkillIndex;
   logger: Logger;
+  config: { approvalsEnabled: boolean };
+  mcpManager: { closeScope(scopeId: string): Promise<void> };
+  mcpTrust: { clearSession(sessionId: string): void };
 }): ToolDef {
-  const { sessions, skills, logger } = deps;
+  const { sessions, skills, logger, config, mcpManager, mcpTrust } = deps;
 
   return defineTool({
     name: 'session',
@@ -75,8 +78,8 @@ export function createSessionTool(deps: {
           return {
             sessionId: session.id,
             workspace: session.workspace,
-            skills: metadata(found),
-            instructions: GATEWAY_INSTRUCTIONS,
+            skills: skillMetadata(found),
+            instructions: createGatewayInstructions(config.approvalsEnabled),
           };
         }
 
@@ -91,8 +94,8 @@ export function createSessionTool(deps: {
           return {
             sessionId: session.id,
             workspace: session.workspace,
-            skills: metadata(found),
-            instructions: GATEWAY_INSTRUCTIONS,
+            skills: skillMetadata(found),
+            instructions: createGatewayInstructions(config.approvalsEnabled),
           };
         }
 
@@ -118,6 +121,11 @@ export function createSessionTool(deps: {
 
         case 'close': {
           const session = await sessions.close(requireSessionId(args.sessionId, 'close'));
+          try {
+            await mcpManager.closeScope(session.id);
+          } finally {
+            mcpTrust.clearSession(session.id);
+          }
           logger.event('session-close', { session: session.id, workspace: session.workspace });
           return { sessionId: session.id, closedAt: session.closedAt };
         }
@@ -132,8 +140,4 @@ export function createSessionTool(deps: {
 function requireSessionId(sessionId: string | undefined, action: string): string {
   if (!sessionId) throw new ToolError(`session ${action} 需要 sessionId`);
   return sessionId;
-}
-
-function metadata(skills: SkillMeta[]): { name: string; description: string; source: string }[] {
-  return skills.map(({ name, description, source }) => ({ name, description, source }));
 }

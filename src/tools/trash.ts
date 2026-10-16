@@ -1,10 +1,9 @@
 import { lstat } from 'node:fs/promises';
-import { isAbsolute, relative, sep } from 'node:path';
 import * as z from 'zod/v4';
 import { APPROVAL_INPUT_FIELDS, enforceApproval, hashArgs, type ApprovalCodec } from '../approval.js';
-import { ToolError } from '../errors.js';
+import { errorMessage, ToolError } from '../errors.js';
 import { defineTool, withGoalReason, type ToolDef } from '../registry.js';
-import { resolvePath } from '../session.js';
+import { isPathWithin, resolvePath } from '../session.js';
 import type { TrashBackend } from '../trash.js';
 
 export const trashSchema = withGoalReason({
@@ -23,11 +22,6 @@ export const TRASH_DESCRIPTION = `将文件或目录移动到系统回收站。
 
 示例：
 { "sessionId": "ses_ab12cd34ef56", "paths": ["tmp", "old.txt"] }`;
-
-function isAncestor(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-}
 
 export function createTrashTool(approvals: ApprovalCodec, backend: TrashBackend): ToolDef {
   return defineTool({
@@ -53,7 +47,7 @@ export function createTrashTool(approvals: ApprovalCodec, backend: TrashBackend)
         for (let j = i + 1; j < paths.length; j += 1) {
           const a = paths[i]!;
           const b = paths[j]!;
-          if (isAncestor(a, b) || isAncestor(b, a)) {
+          if (isPathWithin(a, b) || isPathWithin(b, a)) {
             throw new ToolError(`trash preflight failed: overlapping paths: ${a} <> ${b}`);
           }
         }
@@ -90,7 +84,7 @@ export function createTrashTool(approvals: ApprovalCodec, backend: TrashBackend)
           await backend.trash(path);
           results.push({ path, ok: true });
         } catch (error) {
-          results.push({ path, ok: false, error: error instanceof Error ? error.message : String(error) });
+          results.push({ path, ok: false, error: errorMessage(error) });
         }
       }
       const succeeded = results.filter((result) => result.ok).length;

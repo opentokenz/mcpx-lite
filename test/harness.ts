@@ -230,11 +230,12 @@ export async function createHarness(
     workspace?: string;
     ownedDirs?: string[];
     trashBackend?: { trash(path: string): Promise<void> };
+    approvalsEnabled?: boolean;
   } = {},
 ): Promise<Harness> {
   const owned = opts.ownedDirs ?? [];
-  const home = opts.home ?? (await createOwnedDir(owned, 'mini-pi-home-'));
-  const workspace = opts.workspace ?? (await createOwnedDir(owned, 'mini-pi-workspace-'));
+  const home = opts.home ?? (await createOwnedDir(owned, 'mcpx-lite-home-'));
+  const workspace = opts.workspace ?? (await createOwnedDir(owned, 'mcpx-lite-workspace-'));
   const globalSkillsDir = join(home, '.agents', 'skills');
 
   const logs: string[] = [];
@@ -251,7 +252,7 @@ export async function createHarness(
     skills,
     downloads,
     logger,
-    approvals: createApprovalCodec(),
+    approvals: createApprovalCodec({ enabled: opts.approvalsEnabled ?? true }),
     mcpManager: new McpManager({ connect: createMcpConnection }),
     mcpTrust: new McpTrustStore(),
     mcpGlobalPath: join(home, '.agents', 'mcp.json'),
@@ -262,7 +263,10 @@ export async function createHarness(
           throw new Error('trash backend unavailable in test harness');
         },
       } satisfies { trash(path: string): Promise<void> }),
-    config: loadConfig({ MINI_PI_MCP_HOME: home }),
+    config: loadConfig({
+      MCPX_LITE_HOME: home,
+      ...(opts.approvalsEnabled === false ? { MCPX_LITE_APPROVALS: 'off' } : {}),
+    }),
   };
 
   const handler = createMcpHandler(() => buildServer(deps));
@@ -302,7 +306,12 @@ export async function createHarness(
         close: () => new Promise<void>((done) => server.close(() => done())),
       };
     },
-    restart: () => createHarness({ home, workspace, ownedDirs: owned }),
+    restart: () => createHarness({
+      home,
+      workspace,
+      ownedDirs: owned,
+      approvalsEnabled: opts.approvalsEnabled,
+    }),
     cleanup: async () => {
       await deps.mcpManager.closeAll();
       for (const dir of owned) await rm(dir, { recursive: true, force: true });
