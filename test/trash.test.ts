@@ -145,6 +145,16 @@ describe('trash 工具', () => {
   });
 
   it('glob 字符按普通路径处理，不展开匹配', async () => {
+    if (process.platform === 'win32') {
+      await writeFile(join(h.workspace, 'a1.txt'), 'match\n', 'utf8');
+
+      expect(expectError(await h.callTool('trash', { sessionId, paths: ['a*.txt'] }))).toMatch(
+        /path does not exist/,
+      );
+      expect(calls).toEqual([]);
+      return;
+    }
+
     await writeFile(join(h.workspace, 'a*.txt'), 'literal\n', 'utf8');
 
     expectOk(await h.callToolApproving('trash', { sessionId, paths: ['a*.txt'] }));

@@ -342,7 +342,10 @@ describe('真实 HTTP 端到端', () => {
     const ran = expectOk(
       await client.callToolApproving('shell', {
         sessionId,
-        command: 'mkdir -p dist && cp src/hello.ts dist/hello.txt && wc -c < dist/hello.txt',
+        command:
+          process.platform === 'win32'
+            ? 'New-Item -ItemType Directory -Force -Path dist | Out-Null; Copy-Item -LiteralPath src/hello.ts -Destination dist/hello.txt; (Get-Item -LiteralPath dist/hello.txt).Length'
+            : 'mkdir -p dist && cp src/hello.ts dist/hello.txt && wc -c < dist/hello.txt',
         goal: '产出构建结果',
         reason: '验证 shell 能生成待导出文件',
       }),
