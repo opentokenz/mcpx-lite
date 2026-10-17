@@ -1,61 +1,21 @@
-import { appendFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import {
-  StdioClientTransport,
-  getDefaultEnvironment,
-  type StdioServerParameters,
-} from '@modelcontextprotocol/client/stdio';
 import { isInputRequiredResult } from '@modelcontextprotocol/server';
-import { createMcpConnection, type McpClientAdapter, type McpClientFactory } from '../src/mcp-client.js';
+import { createMcpConnection } from '../src/mcp-client.js';
 import type { ResolvedMcpServer } from '../src/mcp-config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, 'fixtures', 'downstream-mcp.mjs');
 
-class DiagnosticStdioClientTransport extends StdioClientTransport {
-  static diagnosticsPath: string | undefined;
-  static instances: DiagnosticStdioClientTransport[] = [];
-
-  constructor(options: StdioServerParameters) {
-    super({ ...options, stderr: 'pipe' });
-    DiagnosticStdioClientTransport.instances.push(this);
-    const diagnosticsPath = DiagnosticStdioClientTransport.diagnosticsPath;
-    if (diagnosticsPath) {
-      this.stderr?.on('data', (chunk: Buffer) =>
-        appendFileSync(diagnosticsPath, `powershell-stderr: ${chunk.toString('utf8')}\n`),
-      );
-      this.onerror = (error) => appendFileSync(diagnosticsPath, `transport-error: ${String(error)}\n`);
-      this.onclose = () => appendFileSync(diagnosticsPath, 'transport-close\n');
-    }
-  }
-}
-
-const baseDispose = (StdioClientTransport.prototype as unknown as {
-  _dispose: (this: StdioClientTransport) => Promise<void>;
-})._dispose;
-Object.defineProperty(DiagnosticStdioClientTransport.prototype, '_dispose', {
-  value(this: StdioClientTransport) {
-    return baseDispose.call(this);
-  },
-});
-
 describe('真实 downstream MCP stdio', () => {
   it.skipIf(process.platform !== 'win32')('启动含空格路径的 .cmd，并保留含空格与元字符的独立参数', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mini pi mcp-'));
     const command = join(root, 'mcp server.cmd');
-    const diagnosticsPath = join(root, 'stdio-diagnostics.log');
-    const startMarker = join(root, 'fixture-started.marker');
     const argument = 'argument with spaces & ampersand α/二';
-    await writeFile(
-      command,
-      `@echo off\r\necho cmd-start>>"${diagnosticsPath}"\r\nset "MCPX_STDIO_DIAGNOSTICS_FILE=${diagnosticsPath}"\r\nset "FIXTURE_START_MARKER=${startMarker}"\r\n"${process.execPath}" "${fixture}" %*\r\n`,
-      'utf8',
-    );
+    await writeFile(command, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`, 'utf8');
 
     const server: ResolvedMcpServer = {
       name: 'cmd-fixture',
@@ -68,63 +28,14 @@ describe('真实 downstream MCP stdio', () => {
       hash: 'fixture-stdio-cmd',
     };
 
-    DiagnosticStdioClientTransport.diagnosticsPath = diagnosticsPath;
-    DiagnosticStdioClientTransport.instances = [];
-    appendFileSync(diagnosticsPath, 'test-start\n');
-    const diagnosticFactory: McpClientFactory = {
-      getDefaultEnvironment,
-      createClient(info, options) {
-        return new Client(info, options) as unknown as McpClientAdapter;
-      },
-      createStdioTransport(options) {
-        const launchArgs = options.args ?? [];
-        const encodedIndex = launchArgs.indexOf('-EncodedCommand');
-        const script = Buffer.from(launchArgs[encodedIndex + 1] ?? '', 'base64').toString('utf16le');
-        const diagnosticPathLiteral = diagnosticsPath.replaceAll("'", "''");
-        const markStage = (stage: string) =>
-          `[System.IO.File]::AppendAllText('${diagnosticPathLiteral}', '${stage}' + [System.Environment]::NewLine)`;
-        const instrumentedScript = script
-          .split('\n')
-          .map((line, index) => `${markStage(`before-line-${index + 1}`)}\n${line}`)
-          .join('\n');
-        appendFileSync(diagnosticsPath, `transport-command: ${options.command}\npowershell-script:\n${script}\ninstrumented-powershell-script:\n${instrumentedScript}\n`);
-        const instrumentedArgs = [...launchArgs];
-        instrumentedArgs[encodedIndex + 1] = Buffer.from(instrumentedScript, 'utf16le').toString('base64');
-        return new DiagnosticStdioClientTransport({
-          ...(options as StdioServerParameters),
-          args: instrumentedArgs,
-        });
-      },
-      createHttpTransport(url, options) {
-        return new StreamableHTTPClientTransport(url, options);
-      },
-    };
-    const diagnosticTimer = setTimeout(() => {
-      appendFileSync(
-        diagnosticsPath,
-        `transport-pids: ${DiagnosticStdioClientTransport.instances.map(({ pid }) => pid ?? 'null').join(',')}\n`,
-      );
-      void readFile(diagnosticsPath, 'utf8')
-        .then((diagnostics) => console.error(`[Windows .cmd stdio diagnostic]\n${diagnostics}`))
-        .catch(() => console.error('[Windows .cmd stdio diagnostic] <no launch marker or stderr>'));
-    }, 8_000);
-
     try {
-      const connection = await createMcpConnection(server, diagnosticFactory);
-      clearTimeout(diagnosticTimer);
-      const diagnostics = await readFile(diagnosticsPath, 'utf8').catch(() => '<no launch marker or stderr>');
-      console.error(`[Windows .cmd stdio diagnostic: connected]\n${diagnostics}`);
+      const connection = await createMcpConnection(server);
       try {
         expect(connection.info().serverInfo).toEqual({ name: argument, version: '1.0.0' });
       } finally {
         await connection.close();
       }
-    } catch (error) {
-      const diagnostics = await readFile(diagnosticsPath, 'utf8').catch(() => '<no launch marker or stderr>');
-      console.error(`[Windows .cmd stdio diagnostic]\n${diagnostics}`);
-      throw error;
     } finally {
-      clearTimeout(diagnosticTimer);
       await rm(root, { recursive: true, force: true });
     }
   });
