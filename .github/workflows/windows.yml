@@ -25,7 +25,27 @@ jobs:
           bun-version: 1.3.11
       - run: pnpm run typecheck
       - run: pnpm test
-      - run: pnpm run build:windows
+      - name: Build Windows executables
+        shell: pwsh
+        run: |
+          $workspace = $env:GITHUB_WORKSPACE
+          $source = Join-Path $workspace 'src/bin.ts'
+          $dist = Join-Path $workspace 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $x64Output = Join-Path $dist 'mcpx-lite-win-x64.exe'
+          $arm64Output = Join-Path $dist 'mcpx-lite-win-arm64.exe'
+
+          # Bun's cross-target cache is on C:; keep its temporary working directory on the same drive.
+          Push-Location $env:USERPROFILE
+          try {
+            bun build --compile --target=bun-windows-x64 --outfile $x64Output $source
+            if ($LASTEXITCODE -ne 0) { throw "Windows x64 build failed with exit code $LASTEXITCODE" }
+
+            bun build --compile --target=bun-windows-arm64 --outfile $arm64Output $source
+            if ($LASTEXITCODE -ne 0) { throw "Windows ARM64 build failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
       - name: Smoke test packaged x64 executable
         shell: pwsh
         run: |
