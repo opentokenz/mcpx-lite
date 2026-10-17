@@ -42,6 +42,7 @@ describe('Windows system executable paths', () => {
     expect(script).toContain("'space & pipe | value', 'single''quote', '%PATH%'");
     expect(script).toContain('& $commandPath @forwardedArgs');
     expect(script).toContain('[Console]::OutputEncoding');
+    expect(script).not.toContain('[Console]::InputEncoding');
   });
 
   it('leaves executables and non-Windows commands unchanged', () => {
