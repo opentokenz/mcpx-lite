@@ -1,10 +1,34 @@
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { McpServer, inputRequired } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
 
 if (process.env.FIXTURE_START_MARKER) {
   writeFileSync(process.env.FIXTURE_START_MARKER, 'started', 'utf8');
+}
+
+const diagnosticsPath = process.env.MCPX_STDIO_DIAGNOSTICS_FILE;
+function diagnostic(event, value) {
+  if (diagnosticsPath) appendFileSync(diagnosticsPath, `${event}: ${value}\n`, 'utf8');
+}
+
+if (diagnosticsPath) {
+  diagnostic('node-start', JSON.stringify(process.argv.slice(2)));
+  const originalStdinEmit = process.stdin.emit;
+  process.stdin.emit = function (event, ...args) {
+    if (event === 'data') {
+      const chunk = args[0];
+      diagnostic('stdin', Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    }
+    return originalStdinEmit.call(this, event, ...args);
+  };
+
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = function (chunk, ...args) {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    diagnostic('stdout', text);
+    return originalStdoutWrite(chunk, ...args);
+  };
 }
 
 serveStdio(() => {

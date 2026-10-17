@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,8 +14,14 @@ describe('真实 downstream MCP stdio', () => {
   it.skipIf(process.platform !== 'win32')('启动含空格路径的 .cmd，并保留含空格与元字符的独立参数', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mini pi mcp-'));
     const command = join(root, 'mcp server.cmd');
+    const diagnosticsPath = join(root, 'stdio-diagnostics.log');
+    const startMarker = join(root, 'fixture-started.marker');
     const argument = 'argument with spaces & ampersand';
-    await writeFile(command, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`, 'utf8');
+    await writeFile(
+      command,
+      `@echo off\r\nif defined MCPX_STDIO_DIAGNOSTICS_FILE echo cmd-start>>"%MCPX_STDIO_DIAGNOSTICS_FILE%"\r\n"${process.execPath}" "${fixture}" %*\r\n`,
+      'utf8',
+    );
 
     const server: ResolvedMcpServer = {
       name: 'cmd-fixture',
@@ -23,19 +29,33 @@ describe('真实 downstream MCP stdio', () => {
       transport: 'stdio',
       command,
       args: [argument],
-      env: {},
+      env: {
+        FIXTURE_START_MARKER: startMarker,
+        MCPX_STDIO_DIAGNOSTICS_FILE: diagnosticsPath,
+      },
       display: { command, args: [argument], env: [] },
       hash: 'fixture-stdio-cmd',
     };
 
+    const diagnosticTimer = setTimeout(() => {
+      void Promise.all([
+        readFile(diagnosticsPath, 'utf8').catch(() => '<no command or stdio markers>'),
+        readFile(startMarker, 'utf8').then(() => 'fixture started').catch(() => 'fixture did not start'),
+      ]).then(([diagnostics, fixtureStatus]) => {
+        console.error(`[Windows .cmd stdio diagnostic] ${fixtureStatus}\n${diagnostics}`);
+      });
+    }, 8_000);
+
     try {
       const connection = await createMcpConnection(server);
+      clearTimeout(diagnosticTimer);
       try {
         expect(connection.info().serverInfo).toEqual({ name: argument, version: '1.0.0' });
       } finally {
         await connection.close();
       }
     } finally {
+      clearTimeout(diagnosticTimer);
       await rm(root, { recursive: true, force: true });
     }
   });
