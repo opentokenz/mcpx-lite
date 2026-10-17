@@ -9,6 +9,8 @@ describe('runtime CLI arguments', () => {
 
     expect(getCliArgs(['/tmp/mcpx-lite', '/$bunfs/root/mcpx-lite', '--daemon', '--port', '3000']))
       .toEqual(['--daemon', '--port', '3000']);
+    expect(getCliArgs(['C:\\mcpx-lite.exe', 'B:/~BUN/root/mcpx-lite-win-x64.exe', '--daemon', '--port', '3000']))
+      .toEqual(['--daemon', '--port', '3000']);
   });
 
   it('uses an explicit CLI port before the environment and default port', async () => {

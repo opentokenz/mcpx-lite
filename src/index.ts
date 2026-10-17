@@ -74,7 +74,7 @@ export function parseCliArgs(args: string[]): { mode: CliMode; port?: number; ap
 export function getCliArgs(argv: string[] = process.argv): string[] {
   const entryIndex = argv.findIndex((arg) => basename(arg).toLowerCase() === 'bin.ts');
   if (entryIndex >= 1) return argv.slice(entryIndex + 1);
-  if (/(?:^|[/\\])\$bunfs[/\\]root[/\\]/.test(argv[1] ?? '')) return argv.slice(2);
+  if (/(?:^|[/\\])(?:\$bunfs|~BUN)[/\\]root[/\\]/i.test(argv[1] ?? '')) return argv.slice(2);
   return argv.slice(1);
 }
 
