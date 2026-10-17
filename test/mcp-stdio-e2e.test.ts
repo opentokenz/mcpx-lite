@@ -50,7 +50,7 @@ describe('真实 downstream MCP stdio', () => {
     const command = join(root, 'mcp server.cmd');
     const diagnosticsPath = join(root, 'stdio-diagnostics.log');
     const startMarker = join(root, 'fixture-started.marker');
-    const argument = 'argument with spaces & ampersand';
+    const argument = 'argument with spaces & ampersand α/二';
     await writeFile(
       command,
       `@echo off\r\necho cmd-start>>"${diagnosticsPath}"\r\nset "MCPX_STDIO_DIAGNOSTICS_FILE=${diagnosticsPath}"\r\nset "FIXTURE_START_MARKER=${startMarker}"\r\n"${process.execPath}" "${fixture}" %*\r\n`,

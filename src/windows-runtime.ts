@@ -19,8 +19,6 @@ export function buildWindowsBatchLaunch(
   const forwardedArgs = args.map(powershellString).join(', ');
   const script = [
     '$ErrorActionPreference = "Stop"',
-    '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
-    '$OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
     `$commandPath = ${powershellString(command)}`,
     `$forwardedArgs = @(${forwardedArgs})`,
     '& $commandPath @forwardedArgs',

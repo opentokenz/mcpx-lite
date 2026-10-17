@@ -41,7 +41,8 @@ describe('Windows system executable paths', () => {
     expect(script).toContain("$commandPath = 'C:\\Program Files\\MCP\\server.cmd'");
     expect(script).toContain("'space & pipe | value', 'single''quote', '%PATH%'");
     expect(script).toContain('& $commandPath @forwardedArgs');
-    expect(script).toContain('[Console]::OutputEncoding');
+    expect(script).not.toContain('[Console]::OutputEncoding');
+    expect(script).not.toContain('$OutputEncoding =');
     expect(script).not.toContain('[Console]::InputEncoding');
   });
 
