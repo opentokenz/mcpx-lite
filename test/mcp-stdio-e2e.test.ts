@@ -17,8 +17,32 @@ import type { ResolvedMcpServer } from '../src/mcp-config.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, 'fixtures', 'downstream-mcp.mjs');
 
-// The SDK probes subclasses in place, keeping stderr available instead of discarding a sibling's stderr.
-class DiagnosticStdioClientTransport extends StdioClientTransport {}
+class DiagnosticStdioClientTransport extends StdioClientTransport {
+  static diagnosticsPath: string | undefined;
+  static instances: DiagnosticStdioClientTransport[] = [];
+
+  constructor(options: StdioServerParameters) {
+    super({ ...options, stderr: 'pipe' });
+    DiagnosticStdioClientTransport.instances.push(this);
+    const diagnosticsPath = DiagnosticStdioClientTransport.diagnosticsPath;
+    if (diagnosticsPath) {
+      this.stderr?.on('data', (chunk: Buffer) =>
+        appendFileSync(diagnosticsPath, `powershell-stderr: ${chunk.toString('utf8')}\n`),
+      );
+      this.onerror = (error) => appendFileSync(diagnosticsPath, `transport-error: ${String(error)}\n`);
+      this.onclose = () => appendFileSync(diagnosticsPath, 'transport-close\n');
+    }
+  }
+}
+
+const baseDispose = (StdioClientTransport.prototype as unknown as {
+  _dispose: (this: StdioClientTransport) => Promise<void>;
+})._dispose;
+Object.defineProperty(DiagnosticStdioClientTransport.prototype, '_dispose', {
+  value(this: StdioClientTransport) {
+    return baseDispose.call(this);
+  },
+});
 
 describe('真实 downstream MCP stdio', () => {
   it.skipIf(process.platform !== 'win32')('启动含空格路径的 .cmd，并保留含空格与元字符的独立参数', async () => {
@@ -44,7 +68,8 @@ describe('真实 downstream MCP stdio', () => {
       hash: 'fixture-stdio-cmd',
     };
 
-    let diagnosticTransport: DiagnosticStdioClientTransport | undefined;
+    DiagnosticStdioClientTransport.diagnosticsPath = diagnosticsPath;
+    DiagnosticStdioClientTransport.instances = [];
     appendFileSync(diagnosticsPath, 'test-start\n');
     const diagnosticFactory: McpClientFactory = {
       getDefaultEnvironment,
@@ -65,22 +90,20 @@ describe('真实 downstream MCP stdio', () => {
         appendFileSync(diagnosticsPath, `transport-command: ${options.command}\npowershell-script:\n${script}\ninstrumented-powershell-script:\n${instrumentedScript}\n`);
         const instrumentedArgs = [...launchArgs];
         instrumentedArgs[encodedIndex + 1] = Buffer.from(instrumentedScript, 'utf16le').toString('base64');
-        const transport = new DiagnosticStdioClientTransport({
+        return new DiagnosticStdioClientTransport({
           ...(options as StdioServerParameters),
           args: instrumentedArgs,
         });
-        diagnosticTransport = transport;
-        transport.stderr?.on('data', (chunk: Buffer) => appendFileSync(diagnosticsPath, `powershell-stderr: ${chunk.toString('utf8')}\n`));
-        transport.onerror = (error) => appendFileSync(diagnosticsPath, `transport-error: ${String(error)}\n`);
-        transport.onclose = () => appendFileSync(diagnosticsPath, 'transport-close\n');
-        return transport;
       },
       createHttpTransport(url, options) {
         return new StreamableHTTPClientTransport(url, options);
       },
     };
     const diagnosticTimer = setTimeout(() => {
-      appendFileSync(diagnosticsPath, `transport-pid: ${diagnosticTransport?.pid ?? 'null'}\n`);
+      appendFileSync(
+        diagnosticsPath,
+        `transport-pids: ${DiagnosticStdioClientTransport.instances.map(({ pid }) => pid ?? 'null').join(',')}\n`,
+      );
       void readFile(diagnosticsPath, 'utf8')
         .then((diagnostics) => console.error(`[Windows .cmd stdio diagnostic]\n${diagnostics}`))
         .catch(() => console.error('[Windows .cmd stdio diagnostic] <no launch marker or stderr>'));
@@ -89,6 +112,8 @@ describe('真实 downstream MCP stdio', () => {
     try {
       const connection = await createMcpConnection(server, diagnosticFactory);
       clearTimeout(diagnosticTimer);
+      const diagnostics = await readFile(diagnosticsPath, 'utf8').catch(() => '<no launch marker or stderr>');
+      console.error(`[Windows .cmd stdio diagnostic: connected]\n${diagnostics}`);
       try {
         expect(connection.info().serverInfo).toEqual({ name: argument, version: '1.0.0' });
       } finally {
