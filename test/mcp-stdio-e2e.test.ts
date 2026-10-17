@@ -55,8 +55,20 @@ describe('真实 downstream MCP stdio', () => {
         const launchArgs = options.args ?? [];
         const encodedIndex = launchArgs.indexOf('-EncodedCommand');
         const script = Buffer.from(launchArgs[encodedIndex + 1] ?? '', 'base64').toString('utf16le');
-        appendFileSync(diagnosticsPath, `transport-command: ${options.command}\npowershell-script:\n${script}\n`);
-        const transport = new DiagnosticStdioClientTransport(options as StdioServerParameters);
+        const diagnosticPathLiteral = diagnosticsPath.replaceAll("'", "''");
+        const markStage = (stage: string) =>
+          `[System.IO.File]::AppendAllText('${diagnosticPathLiteral}', '${stage}' + [System.Environment]::NewLine)`;
+        const instrumentedScript = script
+          .split('\n')
+          .map((line, index) => `${markStage(`before-line-${index + 1}`)}\n${line}`)
+          .join('\n');
+        appendFileSync(diagnosticsPath, `transport-command: ${options.command}\npowershell-script:\n${script}\ninstrumented-powershell-script:\n${instrumentedScript}\n`);
+        const instrumentedArgs = [...launchArgs];
+        instrumentedArgs[encodedIndex + 1] = Buffer.from(instrumentedScript, 'utf16le').toString('base64');
+        const transport = new DiagnosticStdioClientTransport({
+          ...(options as StdioServerParameters),
+          args: instrumentedArgs,
+        });
         diagnosticTransport = transport;
         transport.stderr?.on('data', (chunk: Buffer) => appendFileSync(diagnosticsPath, `powershell-stderr: ${chunk.toString('utf8')}\n`));
         transport.onerror = (error) => appendFileSync(diagnosticsPath, `transport-error: ${String(error)}\n`);
