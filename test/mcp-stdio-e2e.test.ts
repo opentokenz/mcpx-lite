@@ -44,14 +44,23 @@ describe('真实 downstream MCP stdio', () => {
       hash: 'fixture-stdio-cmd',
     };
 
+    let diagnosticTransport: DiagnosticStdioClientTransport | undefined;
+    appendFileSync(diagnosticsPath, 'test-start\n');
     const diagnosticFactory: McpClientFactory = {
       getDefaultEnvironment,
       createClient(info, options) {
         return new Client(info, options) as unknown as McpClientAdapter;
       },
       createStdioTransport(options) {
+        const launchArgs = options.args ?? [];
+        const encodedIndex = launchArgs.indexOf('-EncodedCommand');
+        const script = Buffer.from(launchArgs[encodedIndex + 1] ?? '', 'base64').toString('utf16le');
+        appendFileSync(diagnosticsPath, `transport-command: ${options.command}\npowershell-script:\n${script}\n`);
         const transport = new DiagnosticStdioClientTransport(options as StdioServerParameters);
+        diagnosticTransport = transport;
         transport.stderr?.on('data', (chunk: Buffer) => appendFileSync(diagnosticsPath, `powershell-stderr: ${chunk.toString('utf8')}\n`));
+        transport.onerror = (error) => appendFileSync(diagnosticsPath, `transport-error: ${String(error)}\n`);
+        transport.onclose = () => appendFileSync(diagnosticsPath, 'transport-close\n');
         return transport;
       },
       createHttpTransport(url, options) {
@@ -59,6 +68,7 @@ describe('真实 downstream MCP stdio', () => {
       },
     };
     const diagnosticTimer = setTimeout(() => {
+      appendFileSync(diagnosticsPath, `transport-pid: ${diagnosticTransport?.pid ?? 'null'}\n`);
       void readFile(diagnosticsPath, 'utf8')
         .then((diagnostics) => console.error(`[Windows .cmd stdio diagnostic]\n${diagnostics}`))
         .catch(() => console.error('[Windows .cmd stdio diagnostic] <no launch marker or stderr>'));
