@@ -19,7 +19,7 @@ describe('真实 downstream MCP stdio', () => {
     const argument = 'argument with spaces & ampersand';
     await writeFile(
       command,
-      `@echo off\r\nif defined MCPX_STDIO_DIAGNOSTICS_FILE echo cmd-start>>"%MCPX_STDIO_DIAGNOSTICS_FILE%"\r\n"${process.execPath}" "${fixture}" %*\r\n`,
+      `@echo off\r\necho cmd-start>>"${diagnosticsPath}"\r\nset "MCPX_STDIO_DIAGNOSTICS_FILE=${diagnosticsPath}"\r\nset "FIXTURE_START_MARKER=${startMarker}"\r\n"${process.execPath}" "${fixture}" %*\r\n`,
       'utf8',
     );
 
