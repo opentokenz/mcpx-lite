@@ -208,13 +208,15 @@ async function smokeRuntime(command: string, args: string[]): Promise<void> {
       MCPX_LITE_GLOBAL_SKILLS: join(temp, 'skills'),
       MCPX_LITE_LOG: 'off',
     },
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   });
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
   const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
 
   try {
-    await waitForServer(port, child);
+    await waitForServer(port, child, () => stderr);
     const server: ResolvedMcpServer = {
       name: 'source-smoke',
       source: 'global',
@@ -251,7 +253,11 @@ async function availablePort(): Promise<number> {
   return port;
 }
 
-async function waitForServer(port: number, child: ReturnType<typeof spawn>): Promise<void> {
+async function waitForServer(
+  port: number,
+  child: ReturnType<typeof spawn>,
+  getStderr: () => string,
+): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline && child.exitCode === null) {
     try {
@@ -261,7 +267,7 @@ async function waitForServer(port: number, child: ReturnType<typeof spawn>): Pro
       await delay(100);
     }
   }
-  throw new Error(`MCP server did not start; exit code ${child.exitCode}`);
+  throw new Error(`MCP server did not start; exit code ${child.exitCode}; stderr: ${getStderr()}`);
 }
 
 async function waitForEndpoint(port: number): Promise<void> {
